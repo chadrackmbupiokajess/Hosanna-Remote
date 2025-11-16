@@ -84,7 +84,8 @@ class PerfRow(MDBoxLayout):
         super().__init__(**kwargs)
         self.adaptive_height = True
         self.spacing = 15
-        self.add_widget(MDLabel(text=text, size_hint_x=None, width=50))
+        # CORRECTION: Augmentation de la largeur pour éviter que le texte ne soit coupé
+        self.add_widget(MDLabel(text=text, size_hint_x=None, width=80))
         self.progress_bar = MDProgressBar(value=0)
         self.add_widget(self.progress_bar)
         self.percentage_label = MDLabel(text="0%", size_hint_x=None, width=50, halign='right')
@@ -99,7 +100,6 @@ class SystemInfoLayout(MDBoxLayout):
         
         cards_container = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=15)
 
-        # Augmentation de l'espacement interne des cartes à 25 pour plus d'aération
         info_card = MDCard(orientation='vertical', padding=15, spacing=25, size_hint_y=None, adaptive_height=True)
         info_card.add_widget(MDLabel(text="Informations Générales", font_style="H6"))
         self.static_info_widgets = {
