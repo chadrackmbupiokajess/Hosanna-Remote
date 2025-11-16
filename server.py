@@ -10,18 +10,32 @@ from pynput.keyboard import Key, Controller as KeyboardController
 # --- Fonctions pour le serveur ---
 
 def send_screen(client_socket, stop_event):
-    # ... (fonction inchangée)
+    """Envoie en continu des captures d'écran (avec résolution) au client."""
     with mss.mss() as sct:
+        # On prend le premier moniteur comme cible
         monitor = sct.monitors[1]
+        
         while not stop_event.is_set():
             try:
                 sct_img = sct.grab(monitor)
+                
+                # Conversion en image Pillow
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                
+                # Compression JPEG
                 mem_file = io.BytesIO()
                 img.save(mem_file, 'JPEG', quality=75)
                 jpeg_bytes = mem_file.getvalue()
-                message = struct.pack("L", len(jpeg_bytes)) + jpeg_bytes
+                
+                # NOUVEAU: Empaqueter la résolution (width, height) avec les données de l'image
+                # Format: 'H' = unsigned short (2 bytes par dimension)
+                header = struct.pack("!HH", monitor['width'], monitor['height'])
+                payload = header + jpeg_bytes
+                
+                # Envoyer la taille totale du payload, puis le payload lui-même
+                message = struct.pack("!L", len(payload)) + payload
                 client_socket.sendall(message)
+                
             except (ConnectionResetError, BrokenPipeError):
                 stop_event.set()
                 break
@@ -30,14 +44,14 @@ def send_screen(client_socket, stop_event):
                 break
 
 def get_pynput_key(key_name):
-    """Convertit un nom de touche de tkinter en objet Key de pynput."""
+    # ... (fonction inchangée)
     try:
         return Key[key_name.lower()]
     except KeyError:
         return key_name
 
 def receive_commands(client_socket, stop_event):
-    """Reçoit et exécute les commandes de contrôle du client."""
+    # ... (fonction inchangée pour l'instant)
     mouse = MouseController()
     keyboard = KeyboardController()
     data = b""
@@ -62,7 +76,6 @@ def receive_commands(client_socket, stop_event):
             
             command_str = cmd_data.decode('utf-8')
             
-            # --- Exécution de la commande ---
             parts = command_str.split(';')
             cmd_type = parts[0]
             
@@ -72,7 +85,7 @@ def receive_commands(client_socket, stop_event):
                 button = Button.left if button_name == "left" else Button.right
                 mouse.click(button, 1)
             
-            elif cmd_type == "MOVE": # NOUVEAU: Gérer le mouvement
+            elif cmd_type == "MOVE":
                 x, y = int(parts[1]), int(parts[2])
                 mouse.position = (x, y)
 
@@ -90,7 +103,6 @@ def receive_commands(client_socket, stop_event):
             stop_event.set()
             break
         except Exception:
-            # Ignorer les erreurs de décodage de commande pour la stabilité
             pass
 
 def handle_client(client_socket, addr):
