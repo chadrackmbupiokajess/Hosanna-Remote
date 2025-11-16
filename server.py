@@ -12,6 +12,7 @@ import psutil
 import re
 import cpuinfo
 import ssl
+import sys # Importation de sys pour PyInstaller
 
 # --- Fonctions utilitaires ---
 
@@ -179,15 +180,22 @@ def start_server():
     port = 1981
 
     # NOUVEAU: Obtenir le répertoire du script pour les chemins absolus
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    cert_file_path = os.path.join(SCRIPT_DIR, "cert.pem")
-    key_file_path = os.path.join(SCRIPT_DIR, "key.pem")
+    # Détecter si nous sommes dans un bundle PyInstaller
+    if getattr(sys, 'frozen', False):
+        # Si c'est un exécutable PyInstaller, le chemin de base est sys._MEIPASS
+        base_path = sys._MEIPASS
+    else:
+        # Sinon, c'est le répertoire du script
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    cert_file_path = os.path.join(base_path, "cert.pem")
+    key_file_path = os.path.join(base_path, "key.pem")
 
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     try:
         context.load_cert_chain(certfile=cert_file_path, keyfile=key_file_path)
     except FileNotFoundError:
-        print(f"Erreur: cert.pem ou key.pem non trouvé à {SCRIPT_DIR}. Le serveur ne peut pas démarrer.")
+        print(f"Erreur: cert.pem ou key.pem non trouvé à {base_path}. Le serveur ne peut pas démarrer.")
         return
     except Exception as e:
         print(f"Erreur de chargement des certificats SSL: {e}")

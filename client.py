@@ -46,7 +46,8 @@ class DesktopViewerLayout(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server_resolution = (1, 1)
-        self.screen_image = KivyImage(allow_stretch=True, keep_ratio=True)
+        # CORRECTION: keep_ratio=False pour remplir tout l'écran
+        self.screen_image = KivyImage(allow_stretch=True, keep_ratio=False)
         self.add_widget(self.screen_image)
     def update_image(self, jpeg_data):
         try:
@@ -59,12 +60,38 @@ class DesktopViewerLayout(BoxLayout):
         except Exception: pass
     def _get_scaled_coords(self, touch):
         img = self.screen_image
-        touch_x, touch_y = touch.x - img.x, touch.y - img.y
-        img_w, img_h = img.norm_image_size
-        ratio_x = self.server_resolution[0] / img_w if img_w > 0 else 0
-        ratio_y = self.server_resolution[1] / img_h if img_h > 0 else 0
-        server_x, server_y = int(touch_x * ratio_x), int((img_h - touch_y) * ratio_y)
+        
+        # Coordonnées du toucher par rapport au widget image
+        # Puisque keep_ratio=False, l'image remplit le widget, donc norm_image_size est la taille du widget
+        touch_x_relative = touch.x - img.x
+        touch_y_relative = touch.y - img.y
+
+        # La taille de l'image rendue est maintenant la taille du widget
+        img_width = img.width
+        img_height = img.height
+        
+        # NOUVEAU: Débogage pour comprendre le décalage
+        print(f"--- DEBUG MOUSE ---")
+        print(f"Kivy Touch (absolute window): ({touch.x:.2f}, {touch.y:.2f})")
+        print(f"Kivy Touch (relative à l'image): ({touch_x_relative:.2f}, {touch_y_relative:.2f})")
+        print(f"Kivy Image Widget Pos (bottom-left): ({img.x:.2f}, {img.y:.2f})")
+        print(f"Kivy Image Widget Size: ({img.width:.2f}, {img.height:.2f})") # Taille du widget
+        print(f"Kivy Image Rendered Size (norm_image_size): ({img.norm_image_size[0]:.2f}, {img.norm_image_size[1]:.2f})") # Taille réelle de l'image (peut être différente si keep_ratio=True)
+        print(f"Server Resolution: {self.server_resolution}")
+
+        # Calculer le ratio
+        ratio_x = self.server_resolution[0] / img_width if img_width > 0 else 0
+        ratio_y = self.server_resolution[1] / img_height if img_height > 0 else 0
+        
+        # Coordonnées finales pour le serveur (avec inversion de l'axe Y)
+        server_x = int(touch_x_relative * ratio_x)
+        server_y = int((img_height - touch_y_relative) * ratio_y)
+        
+        print(f"Calculated Server Coords: ({server_x}, {server_y})")
+        print(f"-------------------")
+
         return server_x, server_y
+
     def on_touch_down(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
@@ -72,6 +99,7 @@ class DesktopViewerLayout(BoxLayout):
             send_command(f"CLICK;{x};{y};{btn}")
             return True
         return super().on_touch_down(touch)
+
     def on_touch_move(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
@@ -182,12 +210,12 @@ class LoginScreen(Screen):
         self.ip_field = MDTextField(
             hint_text="Adresse IP du serveur",
             input_filter=lambda string, from_undo: string if string.isdigit() or string == "." else "",
-            on_text_validate=self.login # NOUVEAU: Déclenche login sur Entrée
+            on_text_validate=self.login
         )
         self.port_field = MDTextField(
             hint_text="Port (ex: 9999)",
             input_filter='int',
-            on_text_validate=self.login # NOUVEAU: Déclenche login sur Entrée
+            on_text_validate=self.login
         )
         self.connect_button = MDRaisedButton(text="Se Connecter", on_release=self.login)
         self.error_label = MDLabel(halign='center', theme_text_color="Error")
