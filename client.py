@@ -82,9 +82,9 @@ class InfoRow(MDBoxLayout):
 class PerfRow(MDBoxLayout):
     def __init__(self, text, **kwargs):
         super().__init__(**kwargs)
-        self.adaptive_height = True
+        self.adaptive_height = True;
+        self.padding = 10
         self.spacing = 15
-        # CORRECTION: Augmentation de la largeur pour éviter que le texte ne soit coupé
         self.add_widget(MDLabel(text=text, size_hint_x=None, width=80))
         self.progress_bar = MDProgressBar(value=0)
         self.add_widget(self.progress_bar)
@@ -100,7 +100,8 @@ class SystemInfoLayout(MDBoxLayout):
         
         cards_container = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=15)
 
-        info_card = MDCard(orientation='vertical', padding=15, spacing=25, size_hint_y=None, adaptive_height=True)
+        # CORRECTION: Padding ajusté pour [gauche, haut, droite, bas]
+        info_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         info_card.add_widget(MDLabel(text="Informations Générales", font_style="H6"))
         self.static_info_widgets = {
             'os': InfoRow(icon="desktop-classic", text="Système"),
@@ -112,7 +113,7 @@ class SystemInfoLayout(MDBoxLayout):
             info_card.add_widget(widget)
         cards_container.add_widget(info_card)
 
-        hw_card = MDCard(orientation='vertical', padding=15, spacing=25, size_hint_y=None, adaptive_height=True)
+        hw_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         hw_card.add_widget(MDLabel(text="Spécifications Matérielles", font_style="H6"))
         self.hw_info_widgets = {
             'cpu_info': InfoRow(icon="cpu-64-bit", text="Processeur"),
@@ -124,7 +125,7 @@ class SystemInfoLayout(MDBoxLayout):
             hw_card.add_widget(widget)
         cards_container.add_widget(hw_card)
 
-        perf_card = MDCard(orientation='vertical', padding=15, spacing=25, size_hint_y=None, adaptive_height=True)
+        perf_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         perf_card.add_widget(MDLabel(text="Performances en Temps Réel", font_style="H6"))
         self.realtime_widgets = {
             'cpu_percent': PerfRow(text="CPU"),
