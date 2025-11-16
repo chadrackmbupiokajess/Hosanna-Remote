@@ -7,16 +7,21 @@ import threading
 import json
 import platform
 import os
+import time
+import psutil
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
 
 # --- Fonctions utilitaires ---
 
+def bytes_to_gb(bytes_val):
+    """Convertit les bytes en gigabytes avec un chiffre après la virgule."""
+    return round(bytes_val / (1024**3), 1)
+
 def get_system_info():
-    """Récupère les informations système de base."""
+    """Récupère les informations système statiques, y compris les détails matériels."""
     try:
-        # Tente de trouver l'IP locale en se connectant à un serveur externe
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
         s.connect(('8.8.8.8', 80))
@@ -24,18 +29,36 @@ def get_system_info():
         s.close()
     except Exception:
         ip = 'N/A'
-        
+    
+    # Récupérer la fréquence du CPU
+    cpu_freq_str = "N/A"
+    try:
+        freq = psutil.cpu_freq()
+        cpu_freq_str = f"{freq.current:.0f} MHz (Max: {freq.max:.0f} MHz)"
+    except Exception:
+        pass # Ne pas planter si la fréquence n'est pas disponible
+
     return {
         'os': f"{platform.system()} {platform.release()}",
         'node': platform.node(),
         'user': os.getlogin(),
-        'ip': ip
+        'ip': ip,
+        'cpu_info': platform.processor(),
+        'cpu_freq': cpu_freq_str, # NOUVELLE INFO
+        'ram_total': f"{bytes_to_gb(psutil.virtual_memory().total)} Go",
+        'disk_total': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go"
+    }
+
+def get_realtime_stats():
+    # ... (fonction inchangée)
+    return {
+        'cpu_percent': psutil.cpu_percent(interval=None),
+        'ram_percent': psutil.virtual_memory().percent,
+        'disk_percent': psutil.disk_usage('/').percent
     }
 
 def send_message(sock, lock, msg_type, payload):
-    """Fonction centralisée pour envoyer des messages thread-safe."""
-    # msg_type: 1-byte pour le type de message
-    # payload: les données à envoyer
+    # ... (fonction inchangée)
     message = msg_type + struct.pack("!L", len(payload)) + payload
     with lock:
         sock.sendall(message)
@@ -43,41 +66,41 @@ def send_message(sock, lock, msg_type, payload):
 # --- Fonctions de thread pour le serveur ---
 
 def send_screen(client_socket, lock, stop_event):
-    """Envoie en continu des captures d'écran au client."""
+    # ... (fonction inchangée)
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
             try:
                 sct_img = sct.grab(monitor)
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                
                 mem_file = io.BytesIO()
                 img.save(mem_file, 'JPEG', quality=75)
                 jpeg_bytes = mem_file.getvalue()
-                
-                # Le payload de l'image contient la résolution + les données JPEG
                 image_payload = struct.pack("!HH", monitor['width'], monitor['height']) + jpeg_bytes
-                
-                # Envoi du message de type 'image' (0x01)
                 send_message(client_socket, lock, b'\x01', image_payload)
-                
-            except (ConnectionResetError, BrokenPipeError):
-                stop_event.set()
-                break
-            except Exception:
-                stop_event.set()
-                break
+            except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
+            except Exception: stop_event.set(); break
+
+def send_stats(client_socket, lock, stop_event):
+    # ... (fonction inchangée)
+    psutil.cpu_percent(interval=None)
+    while not stop_event.is_set():
+        try:
+            stats = get_realtime_stats()
+            stats_payload = json.dumps(stats).encode('utf-8')
+            send_message(client_socket, lock, b'\x03', stats_payload)
+            time.sleep(1)
+        except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
+        except Exception: stop_event.set(); break
 
 def get_pynput_key(key_name):
-    try:
-        return Key[key_name.lower()]
-    except KeyError:
-        return key_name
+    # ... (fonction inchangée)
+    try: return Key[key_name.lower()]
+    except KeyError: return key_name
 
 def receive_commands(client_socket, stop_event):
     # ... (fonction inchangée)
-    mouse = MouseController()
-    keyboard = KeyboardController()
+    mouse, keyboard = MouseController(), KeyboardController()
     data = b""
     payload_size = struct.calcsize("!L")
     while not stop_event.is_set():
@@ -89,60 +112,39 @@ def receive_commands(client_socket, stop_event):
             packed_msg_size = data[:payload_size]
             data = data[payload_size:]
             msg_size = struct.unpack("!L", packed_msg_size)[0]
-            while len(data) < msg_size:
-                data += client_socket.recv(4096)
+            while len(data) < msg_size: data += client_socket.recv(4096)
             cmd_data = data[:msg_size]
             data = data[msg_size:]
             command_str = cmd_data.decode('utf-8')
             parts = command_str.split(';')
             cmd_type = parts[0]
             if cmd_type == "CLICK":
-                x, y, button_name = int(parts[1]), int(parts[2]), parts[3]
+                x, y, btn = int(parts[1]), int(parts[2]), parts[3]
                 mouse.position = (x, y)
-                button = Button.left if button_name == "left" else Button.right
-                mouse.click(button, 1)
-            elif cmd_type == "MOVE":
-                x, y = int(parts[1]), int(parts[2])
-                mouse.position = (x, y)
-            elif cmd_type == "KEYPRESS":
-                key_name = parts[1]
-                key = get_pynput_key(key_name)
-                keyboard.press(key)
-            elif cmd_type == "KEYRELEASE":
-                key_name = parts[1]
-                key = get_pynput_key(key_name)
-                keyboard.release(key)
-        except (ConnectionResetError, BrokenPipeError):
-            stop_event.set()
-            break
-        except Exception:
-            pass
+                mouse.click(Button.left if btn == "left" else Button.right, 1)
+            elif cmd_type == "MOVE": mouse.position = (int(parts[1]), int(parts[2]))
+            elif cmd_type == "KEYPRESS": keyboard.press(get_pynput_key(parts[1]))
+            elif cmd_type == "KEYRELEASE": keyboard.release(get_pynput_key(parts[1]))
+        except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
+        except Exception: pass
 
 def handle_client(client_socket, addr):
+    # ... (fonction inchangée)
     print(f"[*] Connexion acceptée de {addr[0]}:{addr[1]}")
     stop_event = threading.Event()
-    send_lock = threading.Lock() # Verrou pour synchroniser les envois
-
-    # --- Envoyer les informations système au client ---
+    send_lock = threading.Lock()
     sys_info = get_system_info()
     info_payload = json.dumps(sys_info).encode('utf-8')
-    # Envoi du message de type 'info' (0x02)
     send_message(client_socket, send_lock, b'\x02', info_payload)
-    print(f"[*] Informations système envoyées : {sys_info}")
-    # -------------------------------------------------
-    
     sender_thread = threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event))
+    stats_thread = threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event))
     receiver_thread = threading.Thread(target=receive_commands, args=(client_socket, stop_event))
-    
-    sender_thread.daemon = True
-    receiver_thread.daemon = True
-    
-    sender_thread.start()
-    receiver_thread.start()
-    
-    sender_thread.join()
-    receiver_thread.join()
-    
+    threads = [sender_thread, stats_thread, receiver_thread]
+    for t in threads:
+        t.daemon = True
+        t.start()
+    for t in threads:
+        t.join()
     print(f"[*] Connexion avec {addr[0]} terminée.")
     client_socket.close()
 
@@ -158,15 +160,9 @@ def start_server():
     while True:
         try:
             client_socket, addr = server_socket.accept()
-            client_handler_thread = threading.Thread(target=handle_client, args=(client_socket, addr))
-            client_handler_thread.daemon = True
-            client_handler_thread.start()
-        except KeyboardInterrupt:
-            print("\n[*] Arrêt du serveur.")
-            break
-        except Exception as e:
-            print(f"[!] Erreur du serveur principal : {e}")
-            break
+            threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
+        except KeyboardInterrupt: print("\n[*] Arrêt du serveur."); break
+        except Exception as e: print(f"[!] Erreur du serveur principal : {e}"); break
     server_socket.close()
 
 if __name__ == "__main__":
