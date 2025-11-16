@@ -6,12 +6,12 @@ import time
 import json
 from PIL import Image as PilImage
 
-from kivy.app import App
+from kivymd.app import MDApp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image as KivyImage
-from kivy.uix.label import Label
-from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
+from kivymd.uix.label import MDLabel
+from kivymd.uix.tab import MDTabs, MDTabsBase
 from kivy.graphics.texture import Texture
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -23,14 +23,16 @@ def send_command(command):
     if client_socket and is_running:
         try:
             cmd_bytes = command.encode('utf-8')
-            # Le serveur attend un message préfixé par sa longueur
             message = struct.pack("!L", len(cmd_bytes)) + cmd_bytes
             client_socket.sendall(message)
         except (ConnectionResetError, BrokenPipeError, OSError):
             pass
 
+class Tab(BoxLayout, MDTabsBase):
+    """Classe pour un onglet individuel dans MDTabs."""
+    pass
+
 class DesktopViewerLayout(BoxLayout):
-    """Le widget contenant la vue du bureau et gérant les interactions."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server_resolution = (1, 1)
@@ -73,18 +75,17 @@ class DesktopViewerLayout(BoxLayout):
         return super().on_touch_move(touch)
 
 class SystemInfoLayout(GridLayout):
-    """Le widget affichant les informations système."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.cols = 2
-        self.padding = [10, 10]
-        self.spacing = [10, 10]
+        self.padding = [20, 20]
+        self.spacing = [20, 20]
         
         self.info_labels = {}
         info_keys = {'os': 'Système d\'exploitation', 'node': 'Nom de la machine', 'user': 'Utilisateur', 'ip': 'Adresse IP'}
         for key, name in info_keys.items():
-            self.add_widget(Label(text=f"{name}:", halign='right'))
-            self.info_labels[key] = Label(text="N/A", halign='left')
+            self.add_widget(MDLabel(text=f"{name}:", halign='right', theme_text_color="Secondary"))
+            self.info_labels[key] = MDLabel(text="N/A", halign='left', bold=True)
             self.add_widget(self.info_labels[key])
 
     def update_info(self, info_dict):
@@ -92,30 +93,36 @@ class SystemInfoLayout(GridLayout):
             if key in self.info_labels:
                 self.info_labels[key].text = value
 
-class RemoteViewerApp(App):
+class RemoteViewerApp(MDApp):
     def build(self):
         self.title = "Hosanna Remote Viewer"
+        self.theme_cls.theme_style = "Dark"
+        self.theme_cls.primary_palette = "Blue"
         
-        # Le panneau d'onglets principal
-        self.tab_panel = TabbedPanel(do_default_tab=False)
-
+        root = BoxLayout(orientation='vertical')
+        tabs = MDTabs()
+        
+        # --- CORRECTION ICI ---
         # Onglet Bureau
-        desktop_tab = TabbedPanelItem(text='Bureau à distance')
+        desktop_tab = Tab(title='Bureau à distance')
         self.desktop_layout = DesktopViewerLayout()
-        desktop_tab.add_widget(self.desktop_layout)
-        self.tab_panel.add_widget(desktop_tab)
-
+        desktop_tab.add_widget(self.desktop_layout) # On ajoute le contenu à l'onglet
+        
         # Onglet Informations
-        info_tab = TabbedPanelItem(text='Informations Système')
+        info_tab = Tab(title='Informations Système')
         self.info_layout = SystemInfoLayout()
-        info_tab.add_widget(self.info_layout)
-        self.tab_panel.add_widget(info_tab)
+        info_tab.add_widget(self.info_layout) # On ajoute le contenu à l'onglet
 
-        # Gestion du clavier
+        tabs.add_widget(desktop_tab)
+        tabs.add_widget(info_tab)
+        # ---------------------
+        
+        root.add_widget(tabs)
+
         self._keyboard = Window.request_keyboard(lambda: None, self.root)
         self._keyboard.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
         
-        return self.tab_panel
+        return root
 
     def _on_key_down(self, k, keycode, text, modifiers):
         send_command(f"KEYPRESS;{keycode[1]}")
@@ -134,7 +141,6 @@ class RemoteViewerApp(App):
 
     def connect_and_receive(self, host, port):
         global client_socket
-        
         while is_running:
             is_connected = False
             while not is_connected and is_running:
@@ -147,17 +153,13 @@ class RemoteViewerApp(App):
                     is_connected = True
                     print(f"[*] Connecté !")
                 except (ConnectionRefusedError, socket.timeout):
-                    for i in range(5, -1, -1):
-                        if not is_running: break
-                        time.sleep(1)
-                    if not is_running: break
+                    time.sleep(5)
                 except Exception as e:
                     print(f"[!] Erreur de connexion : {e}")
                     time.sleep(5)
 
             data = b""
-            header_size = struct.calcsize("!L") + 1 # 1 byte pour le type + 4 bytes pour la taille
-            
+            header_size = struct.calcsize("!L") + 1
             while is_connected and is_running:
                 try:
                     while len(data) < header_size:
@@ -175,14 +177,14 @@ class RemoteViewerApp(App):
                     payload = data[:msg_size]
                     data = data[msg_size:]
 
-                    if msg_type == b'\x01': # Message Image
+                    if msg_type == b'\x01': # Image
                         res_header_size = struct.calcsize("!HH")
                         width, height = struct.unpack("!HH", payload[:res_header_size])
                         self.desktop_layout.server_resolution = (width, height)
                         jpeg_data = payload[res_header_size:]
                         Clock.schedule_once(lambda dt, frame=jpeg_data: self.desktop_layout.update_image(frame))
                     
-                    elif msg_type == b'\x02': # Message Info Système
+                    elif msg_type == b'\x02': # Info Système
                         info_dict = json.loads(payload.decode('utf-8'))
                         Clock.schedule_once(lambda dt, info=info_dict: self.info_layout.update_info(info))
 
@@ -196,7 +198,6 @@ class RemoteViewerApp(App):
                     is_connected = False
                     if client_socket: client_socket.close()
                     break
-        
         if client_socket: client_socket.close()
 
 if __name__ == "__main__":
