@@ -46,8 +46,8 @@ class DesktopViewerLayout(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server_resolution = (1, 1)
-        # CORRECTION: keep_ratio=False pour remplir tout l'écran
-        self.screen_image = KivyImage(allow_stretch=True, keep_ratio=False)
+        # CORRECTION: keep_ratio=True pour éviter la déformation
+        self.screen_image = KivyImage(allow_stretch=True, keep_ratio=True)
         self.add_widget(self.screen_image)
     def update_image(self, jpeg_data):
         try:
@@ -61,31 +61,41 @@ class DesktopViewerLayout(BoxLayout):
     def _get_scaled_coords(self, touch):
         img = self.screen_image
         
-        # Coordonnées du toucher par rapport au widget image
-        # Puisque keep_ratio=False, l'image remplit le widget, donc norm_image_size est la taille du widget
-        touch_x_relative = touch.x - img.x
-        touch_y_relative = touch.y - img.y
-
-        # La taille de l'image rendue est maintenant la taille du widget
-        img_width = img.width
-        img_height = img.height
+        # Obtenir la taille de l'image rendue (sans déformation)
+        rendered_img_width, rendered_img_height = img.norm_image_size
         
+        # Calculer la position du coin inférieur gauche de l'image rendue dans le widget
+        # L'image est centrée dans le widget KivyImage
+        rendered_img_x = img.center_x - rendered_img_width / 2
+        rendered_img_y = img.center_y - rendered_img_height / 2
+
+        # Coordonnées du toucher par rapport au coin inférieur gauche de l'image RENDUE
+        touch_x_on_rendered_image = touch.x - rendered_img_x
+        touch_y_on_rendered_image = touch.y - rendered_img_y
+
         # NOUVEAU: Débogage pour comprendre le décalage
         print(f"--- DEBUG MOUSE ---")
         print(f"Kivy Touch (absolute window): ({touch.x:.2f}, {touch.y:.2f})")
-        print(f"Kivy Touch (relative à l'image): ({touch_x_relative:.2f}, {touch_y_relative:.2f})")
         print(f"Kivy Image Widget Pos (bottom-left): ({img.x:.2f}, {img.y:.2f})")
-        print(f"Kivy Image Widget Size: ({img.width:.2f}, {img.height:.2f})") # Taille du widget
-        print(f"Kivy Image Rendered Size (norm_image_size): ({img.norm_image_size[0]:.2f}, {img.norm_image_size[1]:.2f})") # Taille réelle de l'image (peut être différente si keep_ratio=True)
+        print(f"Kivy Image Widget Size: ({img.width:.2f}, {img.height:.2f})")
         print(f"Server Resolution: {self.server_resolution}")
+        print(f"Rendered Image Size (norm_image_size): ({rendered_img_width:.2f}, {rendered_img_height:.2f})")
+        print(f"Rendered Image Pos (calculated bottom-left): ({rendered_img_x:.2f}, {rendered_img_y:.2f})")
+        print(f"Touch on Rendered Image: ({touch_x_on_rendered_image:.2f}, {touch_y_on_rendered_image:.2f})")
+
+        # Vérifier si le clic est en dehors de l'image rendue (dans les barres noires)
+        if not (0 <= touch_x_on_rendered_image <= rendered_img_width and
+                0 <= touch_y_on_rendered_image <= rendered_img_height):
+            print(f"Click outside rendered image area (black bars). Ignoring.")
+            return -1, -1 # Retourner des coordonnées invalides pour ignorer le clic
 
         # Calculer le ratio
-        ratio_x = self.server_resolution[0] / img_width if img_width > 0 else 0
-        ratio_y = self.server_resolution[1] / img_height if img_height > 0 else 0
+        ratio_x = self.server_resolution[0] / rendered_img_width if rendered_img_width > 0 else 0
+        ratio_y = self.server_resolution[1] / rendered_img_height if rendered_img_height > 0 else 0
         
         # Coordonnées finales pour le serveur (avec inversion de l'axe Y)
-        server_x = int(touch_x_relative * ratio_x)
-        server_y = int((img_height - touch_y_relative) * ratio_y)
+        server_x = int(touch_x_on_rendered_image * ratio_x)
+        server_y = int((rendered_img_height - touch_y_on_rendered_image) * ratio_y)
         
         print(f"Calculated Server Coords: ({server_x}, {server_y})")
         print(f"-------------------")
@@ -95,6 +105,8 @@ class DesktopViewerLayout(BoxLayout):
     def on_touch_down(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
+            if x == -1 and y == -1: # Ignorer si le clic est dans les barres noires
+                return True
             btn = "left" if touch.button == 'left' else "right"
             send_command(f"CLICK;{x};{y};{btn}")
             return True
@@ -103,6 +115,8 @@ class DesktopViewerLayout(BoxLayout):
     def on_touch_move(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
+            if x == -1 and y == -1: # Ignorer si le mouvement est dans les barres noires
+                return True
             send_command(f"MOVE;{x};{y}")
             return True
         return super().on_touch_move(touch)
