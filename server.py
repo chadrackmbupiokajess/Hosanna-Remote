@@ -13,9 +13,6 @@ import re
 import cpuinfo
 import ssl
 
-from pynput.mouse import Button, Controller as MouseController
-from pynput.keyboard import Key, Controller as KeyboardController
-
 # --- Fonctions utilitaires ---
 
 def bytes_to_gb(bytes_val):
@@ -92,7 +89,8 @@ def send_message(sock, lock, msg_type, payload):
     with lock:
         sock.sendall(message)
 
-# --- Fonctions de thread (inchangées) ---
+
+# --- Fonctions de thread ---
 
 def send_screen(client_socket, lock, stop_event):
     with mss.mss() as sct:
@@ -107,7 +105,7 @@ def send_screen(client_socket, lock, stop_event):
                 image_payload = struct.pack("!HH", monitor['width'], monitor['height']) + jpeg_bytes
                 send_message(client_socket, lock, b'\x01', image_payload)
             except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
-            except Exception: stop_event.set(); break
+            except Exception as e: print(f"Erreur dans send_screen: {e}"); stop_event.set(); break
 
 def send_stats(client_socket, lock, stop_event):
     psutil.cpu_percent(interval=None)
@@ -118,7 +116,10 @@ def send_stats(client_socket, lock, stop_event):
             send_message(client_socket, lock, b'\x03', stats_payload)
             time.sleep(1)
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
-        except Exception: stop_event.set(); break
+        except Exception as e: print(f"Erreur dans send_stats: {e}"); stop_event.set(); break
+
+from pynput.mouse import Button, Controller as MouseController
+from pynput.keyboard import Key, Controller as KeyboardController
 
 def get_pynput_key(key_name):
     try: return Key[key_name.lower()]
@@ -151,11 +152,10 @@ def receive_commands(client_socket, stop_event):
             elif cmd_type == "KEYPRESS": keyboard.press(get_pynput_key(parts[1]))
             elif cmd_type == "KEYRELEASE": keyboard.release(get_pynput_key(parts[1]))
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
-        except Exception: pass
+        except Exception as e: print(f"Erreur dans receive_commands: {e}"); stop_event.set(); break
 
-def handle_client(client_socket, addr):
+def handle_client(client_socket, addr, stop_event):
     print(f"[*] Connexion sécurisée acceptée de {addr[0]}:{addr[1]}")
-    stop_event = threading.Event()
     send_lock = threading.Lock()
     sys_info = get_system_info()
     info_payload = json.dumps(sys_info).encode('utf-8')
@@ -173,28 +173,56 @@ def handle_client(client_socket, addr):
     print(f"[*] Connexion avec {addr[0]} terminée.")
     client_socket.close()
 
+# --- Fonction de démarrage du serveur en mode application ---
 def start_server():
     host = '0.0.0.0'
-    port = 1981  # CORRECTION: Port changé
+    port = 1981
+
+    # NOUVEAU: Obtenir le répertoire du script pour les chemins absolus
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    cert_file_path = os.path.join(SCRIPT_DIR, "cert.pem")
+    key_file_path = os.path.join(SCRIPT_DIR, "key.pem")
+
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    context.load_cert_chain(certfile="cert.pem", keyfile="key.pem")
+    try:
+        context.load_cert_chain(certfile=cert_file_path, keyfile=key_file_path)
+    except FileNotFoundError:
+        print(f"Erreur: cert.pem ou key.pem non trouvé à {SCRIPT_DIR}. Le serveur ne peut pas démarrer.")
+        return
+    except Exception as e:
+        print(f"Erreur de chargement des certificats SSL: {e}")
+        return
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((host, port))
-        sock.listen(5)
-        print(f"[*] Le serveur sécurisé écoute sur {host}:{port}")
-        
-        with context.wrap_socket(sock, server_side=True) as ssock:
-            while True:
-                try:
-                    client_socket, addr = ssock.accept()
-                    threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
-                except KeyboardInterrupt:
-                    print("\n[*] Arrêt du serveur.")
-                    break
-                except Exception as e:
-                    print(f"[!] Erreur du serveur principal : {e}")
-                    break
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((host, port))
+            sock.listen(5)
+            print(f"[*] Le serveur sécurisé écoute sur {host}:{port} en mode application.")
+            
+            with context.wrap_socket(sock, server_side=True) as ssock:
+                while True:
+                    try:
+                        client_socket, addr = ssock.accept()
+                        stop_event = threading.Event() # Créer un stop_event pour ce mode
+                        threading.Thread(target=handle_client, args=(client_socket, addr, stop_event), daemon=True).start()
+                    except KeyboardInterrupt:
+                        print("\n[*] Arrêt du serveur.")
+                        break
+                    except Exception as e:
+                        print(f"[!] Erreur dans la boucle principale du serveur: {e}")
+    except Exception as e:
+        print(f"[!] Erreur critique lors du démarrage du socket serveur: {e}")
 
-if __name__ == "__main__":
+# --- Bloc d'exécution principal ---
+if __name__ == '__main__':
+    # NOUVEAU: Supprimer le fichier batch pour éviter les confusions
+    if os.path.exists("install_and_start_service.bat"):
+        os.remove("install_and_start_service.bat")
+        print("Fichier install_and_start_service.bat supprimé.")
+    
+    # NOUVEAU: Supprimer le fichier de log du service
+    if os.path.exists("server_service.log"):
+        os.remove("server_service.log")
+        print("Fichier server_service.log supprimé.")
+
     start_server()
