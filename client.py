@@ -17,6 +17,7 @@ from kivymd.uix.boxlayout import MDBoxLayout
 from kivy.graphics.texture import Texture
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.utils import get_color_from_hex
 
 is_running = True
 client_socket = None
@@ -29,6 +30,9 @@ def send_command(command):
             client_socket.sendall(message)
         except (ConnectionResetError, BrokenPipeError, OSError):
             pass
+
+def bytes_to_gb(bytes_val):
+    return round(bytes_val / (1024**3), 1)
 
 class Tab(BoxLayout, MDTabsBase):
     pass
@@ -82,14 +86,26 @@ class InfoRow(MDBoxLayout):
 class PerfRow(MDBoxLayout):
     def __init__(self, text, **kwargs):
         super().__init__(**kwargs)
-        self.adaptive_height = True;
-        self.padding = 10
+        self.adaptive_height = True
         self.spacing = 15
-        self.add_widget(MDLabel(text=text, size_hint_x=None, width=80))
-        self.progress_bar = MDProgressBar(value=0)
+        self.padding = 10 # Restauration de votre padding
+        self.add_widget(MDLabel(text=text, size_hint_x=0.25))
+        self.progress_bar = MDProgressBar(value=0, size_hint_x=0.6)
         self.add_widget(self.progress_bar)
-        self.percentage_label = MDLabel(text="0%", size_hint_x=None, width=50, halign='right')
+        self.percentage_label = MDLabel(text="0%", size_hint_x=0.15, halign='right')
         self.add_widget(self.percentage_label)
+
+class DiskPerfRow(MDBoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.adaptive_height = True
+        self.spacing = 15
+        self.padding = 10 # Restauration de votre padding
+        self.add_widget(MDLabel(text="Disque", size_hint_x=0.25))
+        self.progress_bar = MDProgressBar(value=0, size_hint_x=0.45)
+        self.add_widget(self.progress_bar)
+        self.usage_label = MDLabel(text="0/0 Go", size_hint_x=0.3, halign='right')
+        self.add_widget(self.usage_label)
 
 class SystemInfoLayout(MDBoxLayout):
     def __init__(self, **kwargs):
@@ -100,7 +116,6 @@ class SystemInfoLayout(MDBoxLayout):
         
         cards_container = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=15)
 
-        # CORRECTION: Padding ajusté pour [gauche, haut, droite, bas]
         info_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         info_card.add_widget(MDLabel(text="Informations Générales", font_style="H6"))
         self.static_info_widgets = {
@@ -119,7 +134,7 @@ class SystemInfoLayout(MDBoxLayout):
             'cpu_info': InfoRow(icon="cpu-64-bit", text="Processeur"),
             'cpu_freq': InfoRow(icon="speedometer", text="Fréquence"),
             'ram_total': InfoRow(icon="memory", text="RAM Totale"),
-            'disk_total': InfoRow(icon="harddisk", text="Disque Total")
+            'disk_total_static': InfoRow(icon="harddisk", text="Disque Total")
         }
         for widget in self.hw_info_widgets.values():
             hw_card.add_widget(widget)
@@ -130,7 +145,7 @@ class SystemInfoLayout(MDBoxLayout):
         self.realtime_widgets = {
             'cpu_percent': PerfRow(text="CPU"),
             'ram_percent': PerfRow(text="RAM"),
-            'disk_percent': PerfRow(text="Disque")
+            'disk_percent': DiskPerfRow()
         }
         for widget in self.realtime_widgets.values():
             perf_card.add_widget(widget)
@@ -149,8 +164,17 @@ class SystemInfoLayout(MDBoxLayout):
     def update_realtime_stats(self, stats_dict):
         for key, value in stats_dict.items():
             if key in self.realtime_widgets:
-                self.realtime_widgets[key].progress_bar.value = value
-                self.realtime_widgets[key].percentage_label.text = f"{int(value)}%"
+                widget = self.realtime_widgets[key]
+                if key == 'disk_percent':
+                    widget.progress_bar.value = value
+                    widget.usage_label.text = f"{bytes_to_gb(stats_dict['disk_used'])}/{bytes_to_gb(stats_dict['disk_total'])} Go"
+                    if value > 90:
+                        widget.progress_bar.color = get_color_from_hex("#FF0000")
+                    else:
+                        widget.progress_bar.color = MDApp.get_running_app().theme_cls.primary_color
+                elif key in ['cpu_percent', 'ram_percent']:
+                    widget.progress_bar.value = value
+                    widget.percentage_label.text = f"{int(value)}%"
 
 class RemoteViewerApp(MDApp):
     def build(self):

@@ -16,11 +16,9 @@ from pynput.keyboard import Key, Controller as KeyboardController
 # --- Fonctions utilitaires ---
 
 def bytes_to_gb(bytes_val):
-    """Convertit les bytes en gigabytes avec un chiffre après la virgule."""
     return round(bytes_val / (1024**3), 1)
 
 def get_system_info():
-    """Récupère les informations système statiques, y compris les détails matériels."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
@@ -30,13 +28,13 @@ def get_system_info():
     except Exception:
         ip = 'N/A'
     
-    # Récupérer la fréquence du CPU
     cpu_freq_str = "N/A"
     try:
         freq = psutil.cpu_freq()
-        cpu_freq_str = f"{freq.current:.0f} MHz (Max: {freq.max:.0f} MHz)"
+        # CORRECTION: Convertir en GHz
+        cpu_freq_str = f"{freq.current / 1000:.2f} GHz (Max: {freq.max / 1000:.2f} GHz)"
     except Exception:
-        pass # Ne pas planter si la fréquence n'est pas disponible
+        pass
 
     return {
         'os': f"{platform.system()} {platform.release()}",
@@ -44,29 +42,30 @@ def get_system_info():
         'user': os.getlogin(),
         'ip': ip,
         'cpu_info': platform.processor(),
-        'cpu_freq': cpu_freq_str, # NOUVELLE INFO
+        'cpu_freq': cpu_freq_str,
         'ram_total': f"{bytes_to_gb(psutil.virtual_memory().total)} Go",
-        'disk_total': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go"
+        'disk_total_static': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go" # Renommé pour clarté
     }
 
 def get_realtime_stats():
-    # ... (fonction inchangée)
+    """Récupère les stats en temps réel, y compris les détails du disque."""
+    disk = psutil.disk_usage('/')
     return {
         'cpu_percent': psutil.cpu_percent(interval=None),
         'ram_percent': psutil.virtual_memory().percent,
-        'disk_percent': psutil.disk_usage('/').percent
+        'disk_percent': disk.percent,
+        'disk_used': disk.used, # NOUVEAU
+        'disk_total': disk.total # NOUVEAU
     }
 
 def send_message(sock, lock, msg_type, payload):
-    # ... (fonction inchangée)
     message = msg_type + struct.pack("!L", len(payload)) + payload
     with lock:
         sock.sendall(message)
 
-# --- Fonctions de thread pour le serveur ---
+# --- Fonctions de thread pour le serveur (inchangées) ---
 
 def send_screen(client_socket, lock, stop_event):
-    # ... (fonction inchangée)
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
@@ -82,7 +81,6 @@ def send_screen(client_socket, lock, stop_event):
             except Exception: stop_event.set(); break
 
 def send_stats(client_socket, lock, stop_event):
-    # ... (fonction inchangée)
     psutil.cpu_percent(interval=None)
     while not stop_event.is_set():
         try:
@@ -94,12 +92,10 @@ def send_stats(client_socket, lock, stop_event):
         except Exception: stop_event.set(); break
 
 def get_pynput_key(key_name):
-    # ... (fonction inchangée)
     try: return Key[key_name.lower()]
     except KeyError: return key_name
 
 def receive_commands(client_socket, stop_event):
-    # ... (fonction inchangée)
     mouse, keyboard = MouseController(), KeyboardController()
     data = b""
     payload_size = struct.calcsize("!L")
@@ -129,17 +125,17 @@ def receive_commands(client_socket, stop_event):
         except Exception: pass
 
 def handle_client(client_socket, addr):
-    # ... (fonction inchangée)
     print(f"[*] Connexion acceptée de {addr[0]}:{addr[1]}")
     stop_event = threading.Event()
     send_lock = threading.Lock()
     sys_info = get_system_info()
     info_payload = json.dumps(sys_info).encode('utf-8')
     send_message(client_socket, send_lock, b'\x02', info_payload)
-    sender_thread = threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event))
-    stats_thread = threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event))
-    receiver_thread = threading.Thread(target=receive_commands, args=(client_socket, stop_event))
-    threads = [sender_thread, stats_thread, receiver_thread]
+    threads = [
+        threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event)),
+        threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event)),
+        threading.Thread(target=receive_commands, args=(client_socket, stop_event))
+    ]
     for t in threads:
         t.daemon = True
         t.start()
@@ -149,7 +145,6 @@ def handle_client(client_socket, addr):
     client_socket.close()
 
 def start_server():
-    # ... (fonction inchangée)
     host = '0.0.0.0'
     port = 9999
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
