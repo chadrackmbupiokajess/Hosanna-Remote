@@ -9,6 +9,8 @@ import platform
 import os
 import time
 import psutil
+import re
+import cpuinfo  # Nouvelle importation
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
@@ -18,7 +20,27 @@ from pynput.keyboard import Key, Controller as KeyboardController
 def bytes_to_gb(bytes_val):
     return round(bytes_val / (1024**3), 1)
 
+def parse_cpu_name(raw_name):
+    """Analyse le nom brut du CPU pour extraire les informations les plus pertinentes."""
+    match = re.search(r'(i[3579])[- ]?(\d{1,2})\d{2,}', raw_name)
+    if match:
+        brand = match.group(1).upper()
+        gen_str = match.group(2)
+        if gen_str.endswith('1') and gen_str != '11': suffix = 'st'
+        elif gen_str.endswith('2') and gen_str != '12': suffix = 'nd'
+        elif gen_str.endswith('3') and gen_str != '13': suffix = 'rd'
+        else: suffix = 'th'
+        return f"Intel Core {brand} ({gen_str}{suffix} Gen)"
+    
+    clean_name = raw_name.replace("(R)", "").replace("(TM)", "").replace("CPU", "").strip()
+    clean_name = re.sub(r'@ \d+\.\d+GHz', '', clean_name).strip()
+    if 'Family' in clean_name and 'Model' in clean_name:
+        if 'Intel' in clean_name: return 'Intel Processor (x64)'
+        if 'AMD' in clean_name: return 'AMD Processor (x64)'
+    return " ".join(clean_name.split())
+
 def get_system_info():
+    """Récupère les informations système en utilisant les meilleures bibliothèques."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
@@ -31,31 +53,36 @@ def get_system_info():
     cpu_freq_str = "N/A"
     try:
         freq = psutil.cpu_freq()
-        # CORRECTION: Convertir en GHz
         cpu_freq_str = f"{freq.current / 1000:.2f} GHz (Max: {freq.max / 1000:.2f} GHz)"
     except Exception:
         pass
+
+    # CORRECTION: Utiliser py-cpuinfo pour obtenir le nom commercial exact
+    try:
+        cpu_brand_raw = cpuinfo.get_cpu_info()['brand_raw']
+        cpu_name = parse_cpu_name(cpu_brand_raw)
+    except Exception:
+        cpu_name = parse_cpu_name(platform.processor()) # Fallback
 
     return {
         'os': f"{platform.system()} {platform.release()}",
         'node': platform.node(),
         'user': os.getlogin(),
         'ip': ip,
-        'cpu_info': platform.processor(),
+        'cpu_info': cpu_name,
         'cpu_freq': cpu_freq_str,
         'ram_total': f"{bytes_to_gb(psutil.virtual_memory().total)} Go",
-        'disk_total_static': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go" # Renommé pour clarté
+        'disk_total_static': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go"
     }
 
 def get_realtime_stats():
-    """Récupère les stats en temps réel, y compris les détails du disque."""
     disk = psutil.disk_usage('/')
     return {
         'cpu_percent': psutil.cpu_percent(interval=None),
         'ram_percent': psutil.virtual_memory().percent,
         'disk_percent': disk.percent,
-        'disk_used': disk.used, # NOUVEAU
-        'disk_total': disk.total # NOUVEAU
+        'disk_used': disk.used,
+        'disk_total': disk.total
     }
 
 def send_message(sock, lock, msg_type, payload):
@@ -63,7 +90,7 @@ def send_message(sock, lock, msg_type, payload):
     with lock:
         sock.sendall(message)
 
-# --- Fonctions de thread pour le serveur (inchangées) ---
+# --- Fonctions de thread (inchangées) ---
 
 def send_screen(client_socket, lock, stop_event):
     with mss.mss() as sct:
