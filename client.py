@@ -88,7 +88,7 @@ class PerfRow(MDBoxLayout):
         super().__init__(**kwargs)
         self.adaptive_height = True
         self.spacing = 15
-        self.padding = 10 # Restauration de votre padding
+        self.padding = 10
         self.add_widget(MDLabel(text=text, size_hint_x=0.25))
         self.progress_bar = MDProgressBar(value=0, size_hint_x=0.6)
         self.add_widget(self.progress_bar)
@@ -100,11 +100,11 @@ class DiskPerfRow(MDBoxLayout):
         super().__init__(**kwargs)
         self.adaptive_height = True
         self.spacing = 15
-        self.padding = 10 # Restauration de votre padding
+        self.padding = 10
         self.add_widget(MDLabel(text="Disque", size_hint_x=0.25))
-        self.progress_bar = MDProgressBar(value=0, size_hint_x=0.45)
+        self.progress_bar = MDProgressBar(value=0, size_hint_x=0.4)
         self.add_widget(self.progress_bar)
-        self.usage_label = MDLabel(text="0/0 Go", size_hint_x=0.3, halign='right')
+        self.usage_label = MDLabel(text="0/0 Go (0%)", size_hint_x=0.35, halign='right')
         self.add_widget(self.usage_label)
 
 class SystemInfoLayout(MDBoxLayout):
@@ -167,7 +167,8 @@ class SystemInfoLayout(MDBoxLayout):
                 widget = self.realtime_widgets[key]
                 if key == 'disk_percent':
                     widget.progress_bar.value = value
-                    widget.usage_label.text = f"{bytes_to_gb(stats_dict['disk_used'])}/{bytes_to_gb(stats_dict['disk_total'])} Go"
+                    # CORRECTION: Ajout du pourcentage dans le label
+                    widget.usage_label.text = f"{bytes_to_gb(stats_dict['disk_used'])}/{bytes_to_gb(stats_dict['disk_total'])} Go ({int(value)}%)"
                     if value > 90:
                         widget.progress_bar.color = get_color_from_hex("#FF0000")
                     else:
