@@ -75,17 +75,32 @@ class DesktopViewerLayout(BoxLayout):
         return super().on_touch_move(touch)
 
 class SystemInfoLayout(GridLayout):
+    """Le widget affichant les informations système de manière organisée."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.cols = 2
-        self.padding = [20, 20]
-        self.spacing = [20, 20]
+        # Padding et spacing réduits pour un look plus compact
+        self.padding = 20
+        self.spacing = 10
         
         self.info_labels = {}
         info_keys = {'os': 'Système d\'exploitation', 'node': 'Nom de la machine', 'user': 'Utilisateur', 'ip': 'Adresse IP'}
+        
         for key, name in info_keys.items():
-            self.add_widget(MDLabel(text=f"{name}:", halign='right', theme_text_color="Secondary"))
-            self.info_labels[key] = MDLabel(text="N/A", halign='left', bold=True)
+            # Colonne de gauche (descriptions)
+            self.add_widget(MDLabel(
+                text=f"{name}:", 
+                halign='right', 
+                theme_text_color="Secondary",
+                size_hint_x=0.4  # La colonne prend 40% de la largeur
+            ))
+            # Colonne de droite (valeurs)
+            self.info_labels[key] = MDLabel(
+                text="N/A", 
+                halign='left', 
+                bold=True,
+                size_hint_x=0.6 # La colonne prend 60% de la largeur
+            )
             self.add_widget(self.info_labels[key])
 
     def update_info(self, info_dict):
@@ -102,20 +117,16 @@ class RemoteViewerApp(MDApp):
         root = BoxLayout(orientation='vertical')
         tabs = MDTabs()
         
-        # --- CORRECTION ICI ---
-        # Onglet Bureau
         desktop_tab = Tab(title='Bureau à distance')
         self.desktop_layout = DesktopViewerLayout()
-        desktop_tab.add_widget(self.desktop_layout) # On ajoute le contenu à l'onglet
+        desktop_tab.add_widget(self.desktop_layout)
         
-        # Onglet Informations
         info_tab = Tab(title='Informations Système')
         self.info_layout = SystemInfoLayout()
-        info_tab.add_widget(self.info_layout) # On ajoute le contenu à l'onglet
+        info_tab.add_widget(self.info_layout)
 
         tabs.add_widget(desktop_tab)
         tabs.add_widget(info_tab)
-        # ---------------------
         
         root.add_widget(tabs)
 
