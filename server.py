@@ -5,42 +5,46 @@ from PIL import Image
 import io
 import threading
 from pynput.mouse import Button, Controller as MouseController
+from pynput.keyboard import Key, Controller as KeyboardController
 
 # --- Fonctions pour le serveur ---
 
 def send_screen(client_socket, stop_event):
-    """Envoie en continu des captures d'écran au client."""
+    # ... (fonction inchangée)
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
             try:
                 sct_img = sct.grab(monitor)
                 img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-                
                 mem_file = io.BytesIO()
                 img.save(mem_file, 'JPEG', quality=75)
                 jpeg_bytes = mem_file.getvalue()
-                
                 message = struct.pack("L", len(jpeg_bytes)) + jpeg_bytes
                 client_socket.sendall(message)
             except (ConnectionResetError, BrokenPipeError):
-                print("[!] Le client s'est déconnecté (thread d'envoi).")
                 stop_event.set()
                 break
             except Exception:
-                # Ignorer les erreurs mineures d'envoi pour garder le serveur stable
                 stop_event.set()
                 break
+
+def get_pynput_key(key_name):
+    """Convertit un nom de touche de tkinter en objet Key de pynput."""
+    try:
+        return Key[key_name.lower()]
+    except KeyError:
+        return key_name
 
 def receive_commands(client_socket, stop_event):
     """Reçoit et exécute les commandes de contrôle du client."""
     mouse = MouseController()
+    keyboard = KeyboardController()
     data = b""
     payload_size = struct.calcsize("L")
 
     while not stop_event.is_set():
         try:
-            # Lire la taille du message de commande
             while len(data) < payload_size:
                 packet = client_socket.recv(4096)
                 if not packet: raise ConnectionResetError()
@@ -50,7 +54,6 @@ def receive_commands(client_socket, stop_event):
             data = data[payload_size:]
             msg_size = struct.unpack("L", packed_msg_size)[0]
 
-            # Lire les données de la commande
             while len(data) < msg_size:
                 data += client_socket.recv(4096)
             
@@ -65,45 +68,48 @@ def receive_commands(client_socket, stop_event):
             
             if cmd_type == "CLICK":
                 x, y, button_name = int(parts[1]), int(parts[2]), parts[3]
-                
-                # Déplacer la souris
                 mouse.position = (x, y)
-                
-                # Cliquer
                 button = Button.left if button_name == "left" else Button.right
                 mouse.click(button, 1)
-                
-                print(f"[*] Clic {button_name} exécuté à ({x}, {y})")
+            
+            elif cmd_type == "MOVE": # NOUVEAU: Gérer le mouvement
+                x, y = int(parts[1]), int(parts[2])
+                mouse.position = (x, y)
+
+            elif cmd_type == "KEYPRESS":
+                key_name = parts[1]
+                key = get_pynput_key(key_name)
+                keyboard.press(key)
+
+            elif cmd_type == "KEYRELEASE":
+                key_name = parts[1]
+                key = get_pynput_key(key_name)
+                keyboard.release(key)
 
         except (ConnectionResetError, BrokenPipeError):
-            print("[!] Le client s'est déconnecté (thread de réception).")
             stop_event.set()
             break
-        except Exception as e:
-            print(f"[!] Erreur dans le thread de réception : {e}")
-            stop_event.set()
-            break
+        except Exception:
+            # Ignorer les erreurs de décodage de commande pour la stabilité
+            pass
 
 def handle_client(client_socket, addr):
+    # ... (fonction inchangée)
     print(f"[*] Connexion acceptée de {addr[0]}:{addr[1]}")
     stop_event = threading.Event()
-    
     sender_thread = threading.Thread(target=send_screen, args=(client_socket, stop_event))
     receiver_thread = threading.Thread(target=receive_commands, args=(client_socket, stop_event))
-    
     sender_thread.daemon = True
     receiver_thread.daemon = True
-    
     sender_thread.start()
     receiver_thread.start()
-    
     sender_thread.join()
     receiver_thread.join()
-    
     print(f"[*] Connexion avec {addr[0]} terminée.")
     client_socket.close()
 
 def start_server():
+    # ... (fonction inchangée)
     host = '0.0.0.0'
     port = 9999
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -111,7 +117,6 @@ def start_server():
     server_socket.bind((host, port))
     server_socket.listen(5)
     print(f"[*] Le serveur écoute sur {host}:{port}")
-
     while True:
         try:
             client_socket, addr = server_socket.accept()
@@ -124,7 +129,6 @@ def start_server():
         except Exception as e:
             print(f"[!] Erreur du serveur principal : {e}")
             break
-            
     server_socket.close()
 
 if __name__ == "__main__":
