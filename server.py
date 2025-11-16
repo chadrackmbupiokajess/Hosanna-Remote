@@ -10,7 +10,7 @@ import os
 import time
 import psutil
 import re
-import cpuinfo  # Nouvelle importation
+import cpuinfo
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
@@ -21,7 +21,6 @@ def bytes_to_gb(bytes_val):
     return round(bytes_val / (1024**3), 1)
 
 def parse_cpu_name(raw_name):
-    """Analyse le nom brut du CPU pour extraire les informations les plus pertinentes."""
     match = re.search(r'(i[3579])[- ]?(\d{1,2})\d{2,}', raw_name)
     if match:
         brand = match.group(1).upper()
@@ -35,12 +34,11 @@ def parse_cpu_name(raw_name):
     clean_name = raw_name.replace("(R)", "").replace("(TM)", "").replace("CPU", "").strip()
     clean_name = re.sub(r'@ \d+\.\d+GHz', '', clean_name).strip()
     if 'Family' in clean_name and 'Model' in clean_name:
-        if 'Intel' in clean_name: return 'Intel Processor (x64)'
-        if 'AMD' in clean_name: return 'AMD Processor (x64)'
+        if 'Intel' in clean_name: return 'Intel Processor'
+        if 'AMD' in clean_name: return 'AMD Processor'
     return " ".join(clean_name.split())
 
 def get_system_info():
-    """Récupère les informations système en utilisant les meilleures bibliothèques."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
@@ -57,19 +55,23 @@ def get_system_info():
     except Exception:
         pass
 
-    # CORRECTION: Utiliser py-cpuinfo pour obtenir le nom commercial exact
     try:
         cpu_brand_raw = cpuinfo.get_cpu_info()['brand_raw']
         cpu_name = parse_cpu_name(cpu_brand_raw)
     except Exception:
-        cpu_name = parse_cpu_name(platform.processor()) # Fallback
+        cpu_name = parse_cpu_name(platform.processor())
+
+    # CORRECTION: Ajout de l'architecture
+    arch = platform.architecture()[0]
+    arch_str = "x64" if '64' in arch else "x86"
+    final_cpu_name = f"{cpu_name} ({arch_str})"
 
     return {
         'os': f"{platform.system()} {platform.release()}",
         'node': platform.node(),
         'user': os.getlogin(),
         'ip': ip,
-        'cpu_info': cpu_name,
+        'cpu_info': final_cpu_name,
         'cpu_freq': cpu_freq_str,
         'ram_total': f"{bytes_to_gb(psutil.virtual_memory().total)} Go",
         'disk_total_static': f"{bytes_to_gb(psutil.disk_usage('/').total)} Go"
