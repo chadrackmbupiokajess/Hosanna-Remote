@@ -5,7 +5,8 @@ import threading
 import time
 import json
 from PIL import Image as PilImage
-import ssl # Nouvelle importation
+import ssl
+import re # Nouvelle importation pour les expressions régulières
 
 from kivymd.app import MDApp
 from kivy.uix.boxlayout import BoxLayout
@@ -15,6 +16,9 @@ from kivymd.uix.tab import MDTabs, MDTabsBase
 from kivymd.uix.progressbar import MDProgressBar
 from kivymd.uix.card import MDCard
 from kivymd.uix.boxlayout import MDBoxLayout
+from kivymd.uix.textfield import MDTextField
+from kivymd.uix.button import MDRaisedButton
+from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.graphics.texture import Texture
 from kivy.clock import Clock
 from kivy.core.window import Window
@@ -168,11 +172,51 @@ class SystemInfoLayout(MDBoxLayout):
                     widget.progress_bar.value = value
                     widget.percentage_label.text = f"{int(value)}%"
 
-class RemoteViewerApp(MDApp):
-    def build(self):
-        self.title = "Hosanna Remote Viewer"
-        self.theme_cls.theme_style = "Dark"
-        self.theme_cls.primary_palette = "Blue"
+class LoginScreen(Screen):
+    # Regex pour valider une adresse IPv4
+    # Permet 0-255 pour chaque octet
+    IPV4_REGEX = re.compile(r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = MDBoxLayout(orientation='vertical', adaptive_height=True, size_hint_x=0.8, pos_hint={'center_x': 0.5, 'center_y': 0.5}, spacing=20)
+        
+        # CORRECTION: Ajout d'un filtre pour l'IP
+        self.ip_field = MDTextField(
+            hint_text="Adresse IP du serveur",
+            input_filter=lambda string, from_undo: string if string.isdigit() or string == "." else ""
+        )
+        self.port_field = MDTextField(hint_text="Port (ex: 9999)", input_filter='int')
+        self.connect_button = MDRaisedButton(text="Se Connecter", on_release=self.login)
+        self.error_label = MDLabel(halign='center', theme_text_color="Error")
+        
+        layout.add_widget(self.ip_field)
+        layout.add_widget(self.port_field)
+        layout.add_widget(self.connect_button)
+        layout.add_widget(self.error_label)
+        self.add_widget(layout)
+
+    def login(self, *args):
+        ip = self.ip_field.text.strip()
+        port_text = self.port_field.text.strip()
+        
+        if not ip or not port_text:
+            self.error_label.text = "L'adresse IP et le port sont requis."
+            return
+        
+        # NOUVEAU: Validation du format de l'adresse IP
+        if not self.IPV4_REGEX.match(ip):
+            self.error_label.text = "Format d'adresse IP invalide (ex: 192.168.1.1)."
+            return
+
+        port = int(port_text)
+        self.error_label.text = "Connexion en cours..."
+        self.connect_button.disabled = True
+        MDApp.get_running_app().start_connection(ip, port)
+
+class MainScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         root = BoxLayout(orientation='vertical')
         tabs = MDTabs()
         desktop_tab = Tab(title='Bureau à distance')
@@ -184,15 +228,38 @@ class RemoteViewerApp(MDApp):
         tabs.add_widget(desktop_tab)
         tabs.add_widget(info_tab)
         root.add_widget(tabs)
-        self._keyboard = Window.request_keyboard(lambda: None, self.root)
-        self._keyboard.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
-        return root
+        self.add_widget(root)
 
+class RemoteViewerApp(MDApp):
+    def build(self):
+        self.title = "Hosanna Remote Viewer"
+        self.theme_cls.theme_style = "Dark"
+        self.theme_cls.primary_palette = "Blue"
+        self.sm = ScreenManager()
+        self.sm.add_widget(LoginScreen(name='login'))
+        self.sm.add_widget(MainScreen(name='main'))
+        return self.sm
+
+    def start_connection(self, host, port):
+        threading.Thread(target=self.connect_and_receive, args=(host, port), daemon=True).start()
+
+    def activate_remote_keyboard(self):
+        self._keyboard = Window.request_keyboard(self._keyboard_closed, self.root)
+        self._keyboard.bind(on_key_down=self._on_key_down)
+        self._keyboard.bind(on_key_up=self._on_key_up)
+
+    def release_remote_keyboard(self):
+        if hasattr(self, '_keyboard') and self._keyboard:
+            self._keyboard.unbind(on_key_down=self._on_key_down)
+            self._keyboard.unbind(on_key_up=self._on_key_up)
+            self._keyboard.release()
+            self._keyboard = None
+
+    def _keyboard_closed(self):
+        self.release_remote_keyboard()
+    
     def _on_key_down(self, k, keycode, text, modifiers): send_command(f"KEYPRESS;{keycode[1]}"); return True
     def _on_key_up(self, k, keycode): send_command(f"KEYRELEASE;{keycode[1]}"); return True
-
-    def on_start(self):
-        threading.Thread(target=self.connect_and_receive, args=('127.0.0.1', 9999), daemon=True).start()
 
     def on_stop(self):
         global is_running
@@ -200,64 +267,59 @@ class RemoteViewerApp(MDApp):
 
     def connect_and_receive(self, host, port):
         global client_socket
-        
-        # --- NOUVEAU: Contexte SSL pour le client ---
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         context.load_verify_locations("cert.pem")
-        # Pour le développement local avec un certificat auto-signé, on désactive la vérification du nom d'hôte
         context.check_hostname = False
-        # -----------------------------------------
-
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            client_socket = context.wrap_socket(sock, server_hostname=host)
+            client_socket.connect((host, port))
+            print(f"[*] Connecté au serveur sécurisé !")
+            Clock.schedule_once(lambda dt: self.activate_remote_keyboard())
+            Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'main'))
+        except Exception as e:
+            print(f"[!] Échec de la connexion : {e}")
+            login_screen = self.sm.get_screen('login')
+            error_message = "La connexion a échoué.\nVérifiez l'adresse et le port."
+            Clock.schedule_once(lambda dt: setattr(login_screen.error_label, 'text', error_message))
+            Clock.schedule_once(lambda dt: setattr(login_screen.connect_button, 'disabled', False))
+            return
+        data = b""
+        header_size = struct.calcsize("!L") + 1
         while is_running:
-            is_connected = False
-            while not is_connected and is_running:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(3)
-                    
-                    # Envelopper le socket avec SSL
-                    client_socket = context.wrap_socket(sock, server_hostname=host)
-                    client_socket.connect((host, port))
-                    
-                    is_connected = True
-                    print(f"[*] Connecté au serveur sécurisé !")
-                except Exception:
-                    time.sleep(5)
-
-            data = b""
-            header_size = struct.calcsize("!L") + 1
-            while is_connected and is_running:
-                try:
-                    while len(data) < header_size:
-                        packet = client_socket.recv(4096)
-                        if not packet: raise ConnectionResetError()
-                        data += packet
-                    msg_type, msg_size = data[0:1], struct.unpack("!L", data[1:header_size])[0]
-                    data = data[header_size:]
-                    while len(data) < msg_size: data += client_socket.recv(4096)
-                    payload = data[:msg_size]
-                    data = data[msg_size:]
-                    if msg_type == b'\x01':
-                        res_header_size = struct.calcsize("!HH")
-                        width, height = struct.unpack("!HH", payload[:res_header_size])
-                        self.desktop_layout.server_resolution = (width, height)
-                        jpeg_data = payload[res_header_size:]
-                        Clock.schedule_once(lambda dt, f=jpeg_data: self.desktop_layout.update_image(f))
-                    elif msg_type == b'\x02':
-                        info = json.loads(payload.decode('utf-8'))
-                        Clock.schedule_once(lambda dt, i=info: self.info_layout.update_static_info(i))
-                    elif msg_type == b'\x03':
-                        stats = json.loads(payload.decode('utf-8'))
-                        Clock.schedule_once(lambda dt, s=stats: self.info_layout.update_realtime_stats(s))
-                except (ConnectionResetError, BrokenPipeError):
-                    is_connected = False
-                    if client_socket: client_socket.close()
-                    Clock.schedule_once(lambda dt: setattr(self.desktop_layout.screen_image, 'texture', None))
-                    break
-                except Exception:
-                    is_connected = False
-                    if client_socket: client_socket.close()
-                    break
+            try:
+                while len(data) < header_size:
+                    packet = client_socket.recv(4096)
+                    if not packet: raise ConnectionResetError("Connexion perdue")
+                    data += packet
+                msg_type, msg_size = data[0:1], struct.unpack("!L", data[1:header_size])[0]
+                data = data[header_size:]
+                while len(data) < msg_size: data += client_socket.recv(4096)
+                payload = data[:msg_size]
+                data = data[msg_size:]
+                main_screen = self.sm.get_screen('main')
+                if msg_type == b'\x01':
+                    res_header_size = struct.calcsize("!HH")
+                    width, height = struct.unpack("!HH", payload[:res_header_size])
+                    main_screen.desktop_layout.server_resolution = (width, height)
+                    jpeg_data = payload[res_header_size:]
+                    Clock.schedule_once(lambda dt, f=jpeg_data: main_screen.desktop_layout.update_image(f))
+                elif msg_type == b'\x02':
+                    info = json.loads(payload.decode('utf-8'))
+                    Clock.schedule_once(lambda dt, i=info: main_screen.info_layout.update_static_info(i))
+                elif msg_type == b'\x03':
+                    stats = json.loads(payload.decode('utf-8'))
+                    Clock.schedule_once(lambda dt, s=stats: main_screen.info_layout.update_realtime_stats(s))
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                print(f"[!] Connexion perdue: {e}")
+                if client_socket: client_socket.close()
+                login_screen = self.sm.get_screen('login')
+                Clock.schedule_once(lambda dt: self.release_remote_keyboard())
+                Clock.schedule_once(lambda dt: setattr(login_screen.error_label, 'text', "Connexion perdue avec le serveur."))
+                Clock.schedule_once(lambda dt: setattr(login_screen.connect_button, 'disabled', False))
+                Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'login'))
+                break
         if client_socket: client_socket.close()
 
 if __name__ == "__main__":

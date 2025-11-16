@@ -11,12 +11,13 @@ import time
 import psutil
 import re
 import cpuinfo
-import ssl  # Nouvelle importation
+import ssl
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
 
-# --- Fonctions utilitaires (inchangées) ---
+# --- Fonctions utilitaires ---
+
 def bytes_to_gb(bytes_val):
     return round(bytes_val / (1024**3), 1)
 
@@ -30,6 +31,7 @@ def parse_cpu_name(raw_name):
         elif gen_str.endswith('3') and gen_str != '13': suffix = 'rd'
         else: suffix = 'th'
         return f"Intel Core {brand} ({gen_str}{suffix} Gen)"
+    
     clean_name = raw_name.replace("(R)", "").replace("(TM)", "").replace("CPU", "").strip()
     clean_name = re.sub(r'@ \d+\.\d+GHz', '', clean_name).strip()
     if 'Family' in clean_name and 'Model' in clean_name:
@@ -46,20 +48,24 @@ def get_system_info():
         s.close()
     except Exception:
         ip = 'N/A'
+    
     cpu_freq_str = "N/A"
     try:
         freq = psutil.cpu_freq()
         cpu_freq_str = f"{freq.current / 1000:.2f} GHz (Max: {freq.max / 1000:.2f} GHz)"
     except Exception:
         pass
+
     try:
         cpu_brand_raw = cpuinfo.get_cpu_info()['brand_raw']
         cpu_name = parse_cpu_name(cpu_brand_raw)
     except Exception:
         cpu_name = parse_cpu_name(platform.processor())
+
     arch = platform.architecture()[0]
     arch_str = "x64" if '64' in arch else "x86"
     final_cpu_name = f"{cpu_name} ({arch_str})"
+
     return {
         'os': f"{platform.system()} {platform.release()}",
         'node': platform.node(),
@@ -87,6 +93,7 @@ def send_message(sock, lock, msg_type, payload):
         sock.sendall(message)
 
 # --- Fonctions de thread (inchangées) ---
+
 def send_screen(client_socket, lock, stop_event):
     with mss.mss() as sct:
         monitor = sct.monitors[1]
@@ -168,19 +175,15 @@ def handle_client(client_socket, addr):
 
 def start_server():
     host = '0.0.0.0'
-    port = 9999
-
-    # --- NOUVEAU: Configuration SSL ---
+    port = 1981  # CORRECTION: Port changé
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(certfile="cert.pem", keyfile="key.pem")
-    # ---------------------------------
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((host, port))
         sock.listen(5)
         print(f"[*] Le serveur sécurisé écoute sur {host}:{port}")
         
-        # Envelopper le socket serveur avec SSL
         with context.wrap_socket(sock, server_side=True) as ssock:
             while True:
                 try:
