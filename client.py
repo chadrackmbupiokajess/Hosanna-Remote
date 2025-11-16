@@ -5,6 +5,7 @@ import threading
 import time
 import json
 from PIL import Image as PilImage
+import ssl # Nouvelle importation
 
 from kivymd.app import MDApp
 from kivy.uix.boxlayout import BoxLayout
@@ -113,9 +114,7 @@ class SystemInfoLayout(MDBoxLayout):
         self.orientation = 'vertical'
         self.padding = 20
         self.spacing = 15
-        
         cards_container = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=15)
-
         info_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         info_card.add_widget(MDLabel(text="Informations Générales", font_style="H6"))
         self.static_info_widgets = {
@@ -127,7 +126,6 @@ class SystemInfoLayout(MDBoxLayout):
         for widget in self.static_info_widgets.values():
             info_card.add_widget(widget)
         cards_container.add_widget(info_card)
-
         hw_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         hw_card.add_widget(MDLabel(text="Spécifications Matérielles", font_style="H6"))
         self.hw_info_widgets = {
@@ -139,7 +137,6 @@ class SystemInfoLayout(MDBoxLayout):
         for widget in self.hw_info_widgets.values():
             hw_card.add_widget(widget)
         cards_container.add_widget(hw_card)
-
         perf_card = MDCard(orientation='vertical', padding=[15, 25, 15, 20], spacing=25, size_hint_y=None, adaptive_height=True)
         perf_card.add_widget(MDLabel(text="Performances en Temps Réel", font_style="H6"))
         self.realtime_widgets = {
@@ -150,16 +147,13 @@ class SystemInfoLayout(MDBoxLayout):
         for widget in self.realtime_widgets.values():
             perf_card.add_widget(widget)
         cards_container.add_widget(perf_card)
-        
         self.add_widget(cards_container)
         self.add_widget(BoxLayout())
 
     def update_static_info(self, info_dict):
         for key, value in info_dict.items():
-            if key in self.static_info_widgets:
-                self.static_info_widgets[key].value_label.text = str(value)
-            if key in self.hw_info_widgets:
-                self.hw_info_widgets[key].value_label.text = str(value)
+            if key in self.static_info_widgets: self.static_info_widgets[key].value_label.text = str(value)
+            if key in self.hw_info_widgets: self.hw_info_widgets[key].value_label.text = str(value)
     
     def update_realtime_stats(self, stats_dict):
         for key, value in stats_dict.items():
@@ -167,12 +161,9 @@ class SystemInfoLayout(MDBoxLayout):
                 widget = self.realtime_widgets[key]
                 if key == 'disk_percent':
                     widget.progress_bar.value = value
-                    # CORRECTION: Ajout du pourcentage dans le label
                     widget.usage_label.text = f"{bytes_to_gb(stats_dict['disk_used'])}/{bytes_to_gb(stats_dict['disk_total'])} Go ({int(value)}%)"
-                    if value > 90:
-                        widget.progress_bar.color = get_color_from_hex("#FF0000")
-                    else:
-                        widget.progress_bar.color = MDApp.get_running_app().theme_cls.primary_color
+                    if value > 90: widget.progress_bar.color = get_color_from_hex("#FF0000")
+                    else: widget.progress_bar.color = MDApp.get_running_app().theme_cls.primary_color
                 elif key in ['cpu_percent', 'ram_percent']:
                     widget.progress_bar.value = value
                     widget.percentage_label.text = f"{int(value)}%"
@@ -209,17 +200,30 @@ class RemoteViewerApp(MDApp):
 
     def connect_and_receive(self, host, port):
         global client_socket
+        
+        # --- NOUVEAU: Contexte SSL pour le client ---
+        context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        context.load_verify_locations("cert.pem")
+        # Pour le développement local avec un certificat auto-signé, on désactive la vérification du nom d'hôte
+        context.check_hostname = False
+        # -----------------------------------------
+
         while is_running:
             is_connected = False
             while not is_connected and is_running:
                 try:
-                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client_socket.settimeout(3)
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3)
+                    
+                    # Envelopper le socket avec SSL
+                    client_socket = context.wrap_socket(sock, server_hostname=host)
                     client_socket.connect((host, port))
-                    client_socket.settimeout(None)
+                    
                     is_connected = True
-                except (ConnectionRefusedError, socket.timeout): time.sleep(5)
-                except Exception: time.sleep(5)
+                    print(f"[*] Connecté au serveur sécurisé !")
+                except Exception:
+                    time.sleep(5)
+
             data = b""
             header_size = struct.calcsize("!L") + 1
             while is_connected and is_running:
@@ -233,16 +237,16 @@ class RemoteViewerApp(MDApp):
                     while len(data) < msg_size: data += client_socket.recv(4096)
                     payload = data[:msg_size]
                     data = data[msg_size:]
-                    if msg_type == b'\x01': # Image
+                    if msg_type == b'\x01':
                         res_header_size = struct.calcsize("!HH")
                         width, height = struct.unpack("!HH", payload[:res_header_size])
                         self.desktop_layout.server_resolution = (width, height)
                         jpeg_data = payload[res_header_size:]
                         Clock.schedule_once(lambda dt, f=jpeg_data: self.desktop_layout.update_image(f))
-                    elif msg_type == b'\x02': # Info Statique
+                    elif msg_type == b'\x02':
                         info = json.loads(payload.decode('utf-8'))
                         Clock.schedule_once(lambda dt, i=info: self.info_layout.update_static_info(i))
-                    elif msg_type == b'\x03': # Stats Temps Réel
+                    elif msg_type == b'\x03':
                         stats = json.loads(payload.decode('utf-8'))
                         Clock.schedule_once(lambda dt, s=stats: self.info_layout.update_realtime_stats(s))
                 except (ConnectionResetError, BrokenPipeError):
