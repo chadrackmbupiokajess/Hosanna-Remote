@@ -6,7 +6,7 @@ import time
 import json
 from PIL import Image as PilImage
 import ssl
-import re # Nouvelle importation pour les expressions régulières
+import re
 
 from kivymd.app import MDApp
 from kivy.uix.boxlayout import BoxLayout
@@ -173,20 +173,22 @@ class SystemInfoLayout(MDBoxLayout):
                     widget.percentage_label.text = f"{int(value)}%"
 
 class LoginScreen(Screen):
-    # Regex pour valider une adresse IPv4
-    # Permet 0-255 pour chaque octet
     IPV4_REGEX = re.compile(r"^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         layout = MDBoxLayout(orientation='vertical', adaptive_height=True, size_hint_x=0.8, pos_hint={'center_x': 0.5, 'center_y': 0.5}, spacing=20)
         
-        # CORRECTION: Ajout d'un filtre pour l'IP
         self.ip_field = MDTextField(
             hint_text="Adresse IP du serveur",
-            input_filter=lambda string, from_undo: string if string.isdigit() or string == "." else ""
+            input_filter=lambda string, from_undo: string if string.isdigit() or string == "." else "",
+            on_text_validate=self.login # NOUVEAU: Déclenche login sur Entrée
         )
-        self.port_field = MDTextField(hint_text="Port (ex: 9999)", input_filter='int')
+        self.port_field = MDTextField(
+            hint_text="Port (ex: 9999)",
+            input_filter='int',
+            on_text_validate=self.login # NOUVEAU: Déclenche login sur Entrée
+        )
         self.connect_button = MDRaisedButton(text="Se Connecter", on_release=self.login)
         self.error_label = MDLabel(halign='center', theme_text_color="Error")
         
@@ -204,7 +206,6 @@ class LoginScreen(Screen):
             self.error_label.text = "L'adresse IP et le port sont requis."
             return
         
-        # NOUVEAU: Validation du format de l'adresse IP
         if not self.IPV4_REGEX.match(ip):
             self.error_label.text = "Format d'adresse IP invalide (ex: 192.168.1.1)."
             return
