@@ -238,11 +238,7 @@ def handle_client(client_socket, addr, stop_event):
 # --- NOUVEAU: Fonction pour la fenêtre de messagerie Tkinter ---
 def start_server_message_gui(stop_event):
     root = tk.Tk()
-    # NOUVEAU: Rendre la fenêtre racine invisible mais présente
-    root.geometry("1x1+0+0")
-    root.overrideredirect(True)
-    root.attributes('-topmost', True)
-    root.attributes('-alpha', 0.0)
+    root.withdraw()
 
     message_window = None
     message_text_widget = None
@@ -255,14 +251,12 @@ def start_server_message_gui(stop_event):
             message_from_gui_queue.put((reply_text_from_entry, current_client_addr))
         else:
             message_from_gui_queue.put(("Serveur: Votre message a été ignoré.", current_client_addr))
-
+        
         if message_window and message_window.winfo_exists():
-            message_window.grab_release() # Libérer le grab
             message_window.destroy()
         current_client_addr = None
 
-    def on_close_window(event=None): # Ajout de event=None pour les appels sans événement
-        # Vérifier si la fenêtre existe avant de tenter de la détruire
+    def on_close_window(event=None):
         if message_window and message_window.winfo_exists():
             send_reply_and_close("")
 
@@ -273,10 +267,11 @@ def start_server_message_gui(stop_event):
         if message_window is None or not message_window.winfo_exists():
             message_window = tk.Toplevel(root)
             message_window.title(f"Message du Client ({client_addr[0]})")
-
-            window_width = 500
-            window_height = 400
-
+            
+            # CORRECTION: Agrandir la fenêtre
+            window_width = 800
+            window_height = 600
+            
             screen_width = message_window.winfo_screenwidth()
             screen_height = message_window.winfo_screenheight()
             center_x = int(screen_width/2 - window_width / 2)
@@ -284,20 +279,15 @@ def start_server_message_gui(stop_event):
             message_window.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
 
             message_window.attributes('-topmost', True)
-            message_window.attributes('-toolwindow', True)
-            message_window.transient(root)
-            message_window.focus_set()
-            message_window.grab_set()
-
-            # RETIRÉ: message_window.bind("<FocusOut>", on_close_window) # RETIRÉ: Cette ligne était trop agressive
-            message_window.protocol("WM_DELETE_WINDOW", on_close_window) # Gérer la fermeture par la croix
+            
+            message_window.protocol("WM_DELETE_WINDOW", on_close_window)
 
             message_frame = tk.Frame(message_window)
             message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
             default_font = font.nametofont("TkDefaultFont")
             default_font.configure(size=12)
-
+            
             message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
             message_text_widget.pack(fill=tk.BOTH, expand=True)
 
@@ -310,14 +300,14 @@ def start_server_message_gui(stop_event):
 
             close_button = tk.Button(message_frame, text="Fermer", command=on_close_window, font=default_font)
             close_button.pack(side=tk.RIGHT, padx=5, pady=5)
-
+            
         message_text_widget.config(state='normal')
         message_text_widget.insert(tk.END, f"Client ({client_addr[0]}): {client_msg}\n")
         message_text_widget.config(state='disabled')
         message_text_widget.see(tk.END)
         message_window.deiconify()
-        message_window.lift() # S'assurer qu'elle est au-dessus
-        message_window.focus_force() # Forcer le focus
+        message_window.lift()
+        message_window.focus_force()
 
     def check_queue():
         try:
