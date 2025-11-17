@@ -285,8 +285,9 @@ def start_server_message_gui(stop_event):
             message_frame = tk.Frame(message_window)
             message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
+            # CORRECTION: Augmenter la taille de la police
             default_font = font.nametofont("TkDefaultFont")
-            default_font.configure(size=12)
+            default_font.configure(size=14)
             
             message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
             message_text_widget.pack(fill=tk.BOTH, expand=True)
