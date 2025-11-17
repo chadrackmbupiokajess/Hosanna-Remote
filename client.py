@@ -23,15 +23,27 @@ from kivy.graphics.texture import Texture
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.utils import get_color_from_hex
+from kivy.uix.scrollview import ScrollView
+from kivy.properties import StringProperty
 
 is_running = True
 client_socket = None
 
-def send_command(command):
+# --- Constantes ---
+DISCOVERY_PORT = 1982 # Port pour la découverte UDP
+# ------------------
+
+def send_command(command_type, payload=""):
     if client_socket and is_running:
         try:
-            cmd_bytes = command.encode('utf-8')
-            message = struct.pack("!L", len(cmd_bytes)) + cmd_bytes
+            if command_type == "MESSAGE":
+                msg_type = b'\x04' # Nouveau type pour les messages client
+                cmd_bytes = payload.encode('utf-8')
+            else: # Commandes existantes (CLICK, MOVE, KEYPRESS, KEYRELEASE)
+                msg_type = b'\x00' # Type générique pour les commandes de contrôle
+                cmd_bytes = f"{command_type};{payload}".encode('utf-8')
+            
+            message = msg_type + struct.pack("!L", len(cmd_bytes)) + cmd_bytes
             client_socket.sendall(message)
         except (ConnectionResetError, BrokenPipeError, OSError):
             pass
@@ -46,7 +58,6 @@ class DesktopViewerLayout(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server_resolution = (1, 1)
-        # CORRECTION: keep_ratio=True pour éviter la déformation
         self.screen_image = KivyImage(allow_stretch=True, keep_ratio=True)
         self.add_widget(self.screen_image)
     def update_image(self, jpeg_data):
@@ -61,63 +72,42 @@ class DesktopViewerLayout(BoxLayout):
     def _get_scaled_coords(self, touch):
         img = self.screen_image
         
-        # Obtenir la taille de l'image rendue (sans déformation)
         rendered_img_width, rendered_img_height = img.norm_image_size
         
-        # Calculer la position du coin inférieur gauche de l'image rendue dans le widget
-        # L'image est centrée dans le widget KivyImage
         rendered_img_x = img.center_x - rendered_img_width / 2
         rendered_img_y = img.center_y - rendered_img_height / 2
 
-        # Coordonnées du toucher par rapport au coin inférieur gauche de l'image RENDUE
         touch_x_on_rendered_image = touch.x - rendered_img_x
         touch_y_on_rendered_image = touch.y - rendered_img_y
 
-        # NOUVEAU: Débogage pour comprendre le décalage
-        print(f"--- DEBUG MOUSE ---")
-        print(f"Kivy Touch (absolute window): ({touch.x:.2f}, {touch.y:.2f})")
-        print(f"Kivy Image Widget Pos (bottom-left): ({img.x:.2f}, {img.y:.2f})")
-        print(f"Kivy Image Widget Size: ({img.width:.2f}, {img.height:.2f})")
-        print(f"Server Resolution: {self.server_resolution}")
-        print(f"Rendered Image Size (norm_image_size): ({rendered_img_width:.2f}, {rendered_img_height:.2f})")
-        print(f"Rendered Image Pos (calculated bottom-left): ({rendered_img_x:.2f}, {rendered_img_y:.2f})")
-        print(f"Touch on Rendered Image: ({touch_x_on_rendered_image:.2f}, {touch_y_on_rendered_image:.2f})")
-
-        # Vérifier si le clic est en dehors de l'image rendue (dans les barres noires)
         if not (0 <= touch_x_on_rendered_image <= rendered_img_width and
                 0 <= touch_y_on_rendered_image <= rendered_img_height):
-            print(f"Click outside rendered image area (black bars). Ignoring.")
-            return -1, -1 # Retourner des coordonnées invalides pour ignorer le clic
+            return -1, -1
 
-        # Calculer le ratio
         ratio_x = self.server_resolution[0] / rendered_img_width if rendered_img_width > 0 else 0
         ratio_y = self.server_resolution[1] / rendered_img_height if rendered_img_height > 0 else 0
         
-        # Coordonnées finales pour le serveur (avec inversion de l'axe Y)
         server_x = int(touch_x_on_rendered_image * ratio_x)
         server_y = int((rendered_img_height - touch_y_on_rendered_image) * ratio_y)
         
-        print(f"Calculated Server Coords: ({server_x}, {server_y})")
-        print(f"-------------------")
-
         return server_x, server_y
 
     def on_touch_down(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
-            if x == -1 and y == -1: # Ignorer si le clic est dans les barres noires
+            if x == -1 and y == -1:
                 return True
             btn = "left" if touch.button == 'left' else "right"
-            send_command(f"CLICK;{x};{y};{btn}")
+            send_command("CLICK", f"{x};{y};{btn}")
             return True
         return super().on_touch_down(touch)
 
     def on_touch_move(self, touch):
         if self.screen_image.collide_point(*touch.pos):
             x, y = self._get_scaled_coords(touch)
-            if x == -1 and y == -1: # Ignorer si le mouvement est dans les barres noires
+            if x == -1 and y == -1:
                 return True
-            send_command(f"MOVE;{x};{y}")
+            send_command("MOVE", f"{x};{y}")
             return True
         return super().on_touch_move(touch)
 
@@ -268,10 +258,67 @@ class MainScreen(Screen):
         info_tab = Tab(title='Informations Système')
         self.info_layout = SystemInfoLayout()
         info_tab.add_widget(self.info_layout)
+        # NOUVEAU: Onglet "À Propos"
+        about_tab = Tab(title='À Propos')
+        about_layout = MDBoxLayout(orientation='vertical', padding=20, spacing=15)
+        about_layout.add_widget(MDLabel(text="Hosanna Remote", font_style="H5", halign="center", bold=True))
+        about_layout.add_widget(MDLabel(text="Application de Bureau à Distance Sécurisée", halign="center", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="---", halign="center", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="Représentant légal:", font_style="H6", bold=True))
+        about_layout.add_widget(MDLabel(text="Chadrack Mbu Jess", theme_text_color="Primary"))
+        about_layout.add_widget(MDLabel(text="Fonction : Fondateur & Directeur Général", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="En qualité de représentant légal de Jessna TechLearn", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="---", halign="center", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="Contact:", font_style="H6", bold=True))
+        about_layout.add_widget(MDLabel(text="Email : jessnatechlearn@gmail.com", theme_text_color="Primary"))
+        about_layout.add_widget(MDLabel(text="Téléphone : +243 891 433 419", theme_text_color="Primary"))
+        about_layout.add_widget(MDLabel(text="---", halign="center", theme_text_color="Secondary"))
+        about_layout.add_widget(MDLabel(text="Version : 1.0.0", halign="center", theme_text_color="Secondary"))
+        about_layout.add_widget(BoxLayout()) # Pour pousser le contenu vers le haut
+        about_tab.add_widget(about_layout)
+
+        # NOUVEAU: Onglet Messagerie
+        message_tab = Tab(title='Messagerie')
+        self.message_history_label = MDLabel(text="", size_hint_y=None, valign="top", padding=10, markup=True) # markup=True pour les couleurs
+        self.message_history_label.bind(texture_size=self.message_history_label.setter('size')) # Permet au label de s'étendre
+        
+        self.message_scroll_view = ScrollView(size_hint=(1, 0.8), do_scroll_x=False) # Stocker la référence
+        self.message_scroll_view.add_widget(self.message_history_label)
+
+        message_input = MDTextField(hint_text="Votre message...", mode="rectangle", size_hint_y=None, height="48dp")
+        send_button = MDRaisedButton(text="Envoyer", size_hint_y=None, height="48dp", on_release=lambda x: self.send_message(message_input))
+        
+        message_input_layout = MDBoxLayout(size_hint_y=None, height="48dp", spacing=10)
+        message_input_layout.add_widget(message_input)
+        message_input_layout.add_widget(send_button)
+
+        message_layout = MDBoxLayout(orientation='vertical', padding=10, spacing=10)
+        message_layout.add_widget(self.message_scroll_view)
+        message_layout.add_widget(message_input_layout)
+        message_tab.add_widget(message_layout)
+        # FIN NOUVEL ONGLET
+
         tabs.add_widget(desktop_tab)
         tabs.add_widget(info_tab)
+        tabs.add_widget(message_tab) # Ajout du nouvel onglet Messagerie
+        tabs.add_widget(about_tab) 
         root.add_widget(tabs)
         self.add_widget(root)
+
+    def send_message(self, message_input_widget):
+        message_text = message_input_widget.text.strip()
+        if message_text:
+            self.message_history_label.text += f"[color=#00BFFF]Client:[/color] {message_text}\n"
+            send_command("MESSAGE", message_text)
+            message_input_widget.text = "" # Effacer le champ après envoi
+            # Faire défiler vers le bas
+            Clock.schedule_once(lambda dt: self.message_scroll_view.scroll_to(self.message_history_label))
+
+    def receive_server_message(self, message):
+        self.message_history_label.text += f"[color=#FFD700]Serveur:[/color] {message}\n"
+        # Faire défiler vers le bas
+        Clock.schedule_once(lambda dt: self.message_scroll_view.scroll_to(self.message_history_label))
+
 
 class RemoteViewerApp(MDApp):
     def build(self):
@@ -301,8 +348,8 @@ class RemoteViewerApp(MDApp):
     def _keyboard_closed(self):
         self.release_remote_keyboard()
     
-    def _on_key_down(self, k, keycode, text, modifiers): send_command(f"KEYPRESS;{keycode[1]}"); return True
-    def _on_key_up(self, k, keycode): send_command(f"KEYRELEASE;{keycode[1]}"); return True
+    def _on_key_down(self, k, keycode, text, modifiers): send_command("KEYPRESS", keycode[1]); return True
+    def _on_key_up(self, k, keycode): send_command("KEYRELEASE", keycode[1]); return True
 
     def on_stop(self):
         global is_running
@@ -315,9 +362,10 @@ class RemoteViewerApp(MDApp):
         context.check_hostname = False
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
+            sock.settimeout(5) # Timeout for initial connect()
             client_socket = context.wrap_socket(sock, server_hostname=host)
             client_socket.connect((host, port))
+            client_socket.settimeout(None) # NOUVEAU: Set to blocking after successful connection
             print(f"[*] Connecté au serveur sécurisé !")
             Clock.schedule_once(lambda dt: self.activate_remote_keyboard())
             Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'main'))
@@ -342,18 +390,21 @@ class RemoteViewerApp(MDApp):
                 payload = data[:msg_size]
                 data = data[msg_size:]
                 main_screen = self.sm.get_screen('main')
-                if msg_type == b'\x01':
+                if msg_type == b'\x01': # Image
                     res_header_size = struct.calcsize("!HH")
                     width, height = struct.unpack("!HH", payload[:res_header_size])
                     main_screen.desktop_layout.server_resolution = (width, height)
                     jpeg_data = payload[res_header_size:]
                     Clock.schedule_once(lambda dt, f=jpeg_data: main_screen.desktop_layout.update_image(f))
-                elif msg_type == b'\x02':
+                elif msg_type == b'\x02': # Info Statique
                     info = json.loads(payload.decode('utf-8'))
                     Clock.schedule_once(lambda dt, i=info: main_screen.info_layout.update_static_info(i))
-                elif msg_type == b'\x03':
+                elif msg_type == b'\x03': # Stats Temps Réel
                     stats = json.loads(payload.decode('utf-8'))
                     Clock.schedule_once(lambda dt, s=stats: main_screen.info_layout.update_realtime_stats(s))
+                elif msg_type == b'\x05': # Message du serveur (Nouveau type)
+                    server_message = payload.decode('utf-8')
+                    Clock.schedule_once(lambda dt: main_screen.receive_server_message(server_message)) # Passer le message directement
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 print(f"[!] Connexion perdue: {e}")
                 if client_socket: client_socket.close()

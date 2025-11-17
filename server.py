@@ -12,7 +12,15 @@ import psutil
 import re
 import cpuinfo
 import ssl
-import sys # Importation de sys pour PyInstaller
+import sys
+
+from pynput.mouse import Button, Controller as MouseController
+from pynput.keyboard import Key, Controller as KeyboardController
+
+# --- Constantes ---
+DISCOVERY_PORT = 1982 # Port pour la découverte UDP
+SERVER_PORT = 1981    # Port pour la connexion TCP sécurisée
+# ------------------
 
 # --- Fonctions utilitaires ---
 
@@ -41,7 +49,7 @@ def get_system_info():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
-        s.connect(('8.8.8.8', 80))
+        s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
     except Exception:
@@ -94,6 +102,7 @@ def send_message(sock, lock, msg_type, payload):
 # --- Fonctions de thread ---
 
 def send_screen(client_socket, lock, stop_event):
+    print(f"[*] SERVER THREAD send_screen: Démarré.") # DEBUG
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
@@ -107,8 +116,10 @@ def send_screen(client_socket, lock, stop_event):
                 send_message(client_socket, lock, b'\x01', image_payload)
             except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
             except Exception as e: print(f"Erreur dans send_screen: {e}"); stop_event.set(); break
+    print(f"[*] SERVER THREAD send_screen: Arrêté.") # DEBUG
 
 def send_stats(client_socket, lock, stop_event):
+    print(f"[*] SERVER THREAD send_stats: Démarré.") # DEBUG
     psutil.cpu_percent(interval=None)
     while not stop_event.is_set():
         try:
@@ -118,74 +129,120 @@ def send_stats(client_socket, lock, stop_event):
             time.sleep(1)
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans send_stats: {e}"); stop_event.set(); break
-
-from pynput.mouse import Button, Controller as MouseController
-from pynput.keyboard import Key, Controller as KeyboardController
+    print(f"[*] SERVER THREAD send_stats: Arrêté.") # DEBUG
 
 def get_pynput_key(key_name):
     try: return Key[key_name.lower()]
     except KeyError: return key_name
 
-def receive_commands(client_socket, stop_event):
+def receive_commands(client_socket, lock, stop_event):
+    print(f"[*] SERVER THREAD receive_commands: Démarré.") # DEBUG
     mouse, keyboard = MouseController(), KeyboardController()
     data = b""
-    payload_size = struct.calcsize("!L")
+    header_size = struct.calcsize("!L") + 1 # Taille du type + taille du payload
     while not stop_event.is_set():
         try:
-            while len(data) < payload_size:
+            while len(data) < header_size:
                 packet = client_socket.recv(4096)
                 if not packet: raise ConnectionResetError()
                 data += packet
-            packed_msg_size = data[:payload_size]
-            data = data[payload_size:]
-            msg_size = struct.unpack("!L", packed_msg_size)[0]
+            
+            msg_type, msg_size = data[0:1], struct.unpack("!L", data[1:header_size])[0]
+            data = data[header_size:]
+
             while len(data) < msg_size: data += client_socket.recv(4096)
-            cmd_data = data[:msg_size]
+            
+            payload = data[:msg_size]
             data = data[msg_size:]
-            command_str = cmd_data.decode('utf-8')
-            parts = command_str.split(';')
-            cmd_type = parts[0]
-            if cmd_type == "CLICK":
-                x, y, btn = int(parts[1]), int(parts[2]), parts[3]
-                mouse.position = (x, y)
-                mouse.click(Button.left if btn == "left" else Button.right, 1)
-            elif cmd_type == "MOVE": mouse.position = (int(parts[1]), int(parts[2]))
-            elif cmd_type == "KEYPRESS": keyboard.press(get_pynput_key(parts[1]))
-            elif cmd_type == "KEYRELEASE": keyboard.release(get_pynput_key(parts[1]))
+
+            if msg_type == b'\x00': # Commandes de contrôle (CLICK, MOVE, KEYPRESS, KEYRELEASE)
+                command_str = payload.decode('utf-8')
+                parts = command_str.split(';')
+                cmd_type = parts[0]
+                
+                if cmd_type == "CLICK":
+                    x, y, btn = int(parts[1]), int(parts[2]), parts[3]
+                    mouse.position = (x, y)
+                    mouse.click(Button.left if btn == "left" else Button.right, 1)
+                    print(f"[*] SERVER: CLICK received at ({x}, {y}) with button {btn}") # DEBUG
+                elif cmd_type == "MOVE":
+                    x, y = int(parts[1]), int(parts[2])
+                    mouse.position = (x, y)
+                    # print(f"[*] SERVER: MOVE received to ({x}, {y})") # DEBUG (peut être très verbeux)
+                elif cmd_type == "KEYPRESS":
+                    keyboard.press(get_pynput_key(parts[1]))
+                    print(f"[*] SERVER: KEYPRESS received for {parts[1]}") # DEBUG
+                elif cmd_type == "KEYRELEASE":
+                    keyboard.release(get_pynput_key(parts[1]))
+                    print(f"[*] SERVER: KEYRELEASE received for {parts[1]}") # DEBUG
+            
+            elif msg_type == b'\x04': # Message du client (Nouveau type)
+                client_message = payload.decode('utf-8')
+                print(f"[MESSAGE DU CLIENT]: {client_message}")
+                response_message = f"Serveur: Message reçu: '{client_message}'"
+                send_message(client_socket, lock, b'\x05', response_message.encode('utf-8')) # \x05 pour réponse serveur
+            
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans receive_commands: {e}"); stop_event.set(); break
+    print(f"[*] SERVER THREAD receive_commands: Arrêté.") # DEBUG
 
 def handle_client(client_socket, addr, stop_event):
-    print(f"[*] Connexion sécurisée acceptée de {addr[0]}:{addr[1]}")
+    print(f"[*] SERVER: Connexion sécurisée acceptée de {addr[0]}:{addr[1]}") # DEBUG
     send_lock = threading.Lock()
-    sys_info = get_system_info()
-    info_payload = json.dumps(sys_info).encode('utf-8')
-    send_message(client_socket, send_lock, b'\x02', info_payload)
+    try:
+        sys_info = get_system_info()
+        info_payload = json.dumps(sys_info).encode('utf-8')
+        send_message(client_socket, send_lock, b'\x02', info_payload)
+        print(f"[*] SERVER: Infos système initiales envoyées à {addr[0]}") # DEBUG
+    except Exception as e:
+        print(f"[!] SERVER: Erreur critique lors de l'envoi des infos système initiales à {addr[0]}: {e}") # DEBUG
+        client_socket.close()
+        return # Quitter si l'envoi initial échoue
+
     threads = [
         threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event)),
         threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event)),
-        threading.Thread(target=receive_commands, args=(client_socket, stop_event))
+        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event))
     ]
     for t in threads:
         t.daemon = True
         t.start()
+    print(f"[*] SERVER: Threads de communication démarrés pour {addr[0]}") # DEBUG
+
     for t in threads:
         t.join()
-    print(f"[*] Connexion avec {addr[0]} terminée.")
+    print(f"[*] SERVER: Connexion avec {addr[0]} terminée. Fermeture du socket.") # DEBUG
     client_socket.close()
+
+# --- NOUVEAU: Fonction de broadcast UDP pour la découverte ---
+def discovery_broadcast(server_ip, server_port, stop_event):
+    broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    broadcast_socket.settimeout(1) # Petit timeout pour vérifier stop_event
+
+    message = f"HOSANNA_REMOTE_SERVER_ADVERTISEMENT;{server_ip};{server_port}".encode('utf-8')
+    print(f"[*] Démarrage du broadcast de découverte sur le port {DISCOVERY_PORT}...")
+
+    while not stop_event.is_set():
+        try:
+            broadcast_socket.sendto(message, ('<broadcast>', DISCOVERY_PORT))
+            # print(f"[*] Broadcast envoyé: {message.decode()}")
+        except Exception as e:
+            print(f"[!] Erreur lors de l'envoi du broadcast: {e}")
+        time.sleep(3) # Envoyer toutes les 3 secondes
+    
+    broadcast_socket.close()
+    print("[*] Arrêt du broadcast de découverte.")
 
 # --- Fonction de démarrage du serveur en mode application ---
 def start_server():
     host = '0.0.0.0'
-    port = 1981
+    port = SERVER_PORT
 
-    # NOUVEAU: Obtenir le répertoire du script pour les chemins absolus
     # Détecter si nous sommes dans un bundle PyInstaller
     if getattr(sys, 'frozen', False):
-        # Si c'est un exécutable PyInstaller, le chemin de base est sys._MEIPASS
         base_path = sys._MEIPASS
     else:
-        # Sinon, c'est le répertoire du script
         base_path = os.path.dirname(os.path.abspath(__file__))
 
     cert_file_path = os.path.join(base_path, "cert.pem")
@@ -201,6 +258,22 @@ def start_server():
         print(f"Erreur de chargement des certificats SSL: {e}")
         return
 
+    # Obtenir l'IP locale du serveur pour le broadcast
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "127.0.0.1" # Fallback si pas de connexion internet
+
+    server_stop_event = threading.Event()
+
+    # Démarrer le thread de broadcast de découverte
+    discovery_thread = threading.Thread(target=discovery_broadcast, args=(local_ip, port, server_stop_event))
+    discovery_thread.daemon = True
+    discovery_thread.start()
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((host, port))
@@ -208,18 +281,29 @@ def start_server():
             print(f"[*] Le serveur sécurisé écoute sur {host}:{port} en mode application.")
             
             with context.wrap_socket(sock, server_side=True) as ssock:
-                while True:
+                while not server_stop_event.is_set(): # Utiliser le même stop_event
                     try:
+                        ssock.settimeout(1) 
                         client_socket, addr = ssock.accept()
-                        stop_event = threading.Event() # Créer un stop_event pour ce mode
-                        threading.Thread(target=handle_client, args=(client_socket, addr, stop_event), daemon=True).start()
+                        stop_event_client = threading.Event() # Stop event par client
+                        threading.Thread(target=handle_client, args=(client_socket, addr, stop_event_client), daemon=True).start()
+                    except socket.timeout:
+                        pass
                     except KeyboardInterrupt:
                         print("\n[*] Arrêt du serveur.")
+                        server_stop_event.set() # Signaler l'arrêt
                         break
                     except Exception as e:
                         print(f"[!] Erreur dans la boucle principale du serveur: {e}")
     except Exception as e:
         print(f"[!] Erreur critique lors du démarrage du socket serveur: {e}")
+        server_stop_event.set() # Signaler l'arrêt en cas d'erreur critique
+
+    # Attendre la fin du thread de découverte
+    if discovery_thread and discovery_thread.is_alive():
+        discovery_thread.join(timeout=5)
+    print("[*] Serveur arrêté.")
+
 
 # --- Bloc d'exécution principal ---
 if __name__ == '__main__':
