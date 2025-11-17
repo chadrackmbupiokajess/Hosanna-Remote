@@ -14,7 +14,7 @@ import cpuinfo
 import ssl
 import sys
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, font # Nouvelle importation pour la police
+from tkinter import scrolledtext, messagebox, font
 from queue import Queue
 
 from pynput.mouse import Button, Controller as MouseController
@@ -27,7 +27,7 @@ SERVER_PORT = 1981    # Port pour la connexion TCP sécurisée
 
 # --- Queues pour la communication inter-threads ---
 message_to_gui_queue = Queue()
-message_from_gui_queue = Queue()
+message_from_gui_queue = Queue() # Contient (message, client_addr)
 # -------------------------------------------------
 
 # --- Fonctions utilitaires ---
@@ -143,7 +143,7 @@ def get_pynput_key(key_name):
     try: return Key[key_name.lower()]
     except KeyError: return key_name
 
-def receive_commands(client_socket, lock, stop_event):
+def receive_commands(client_socket, lock, stop_event, client_addr): # Ajout de client_addr
     print(f"[*] SERVER THREAD receive_commands: Démarré.") # DEBUG
     mouse, keyboard = MouseController(), KeyboardController()
     data = b""
@@ -187,8 +187,8 @@ def receive_commands(client_socket, lock, stop_event):
             elif msg_type == b'\x04': # Message du client
                 client_message = payload.decode('utf-8')
                 print(f"[MESSAGE DU CLIENT]: {client_message}")
-                # Placer le message dans la queue pour le thread GUI
-                message_to_gui_queue.put(client_message)
+                # Placer le message dans la queue pour le thread GUI, avec l'adresse du client
+                message_to_gui_queue.put((client_message, client_addr))
             
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans receive_commands: {e}"); stop_event.set(); break
@@ -210,7 +210,7 @@ def handle_client(client_socket, addr, stop_event):
     threads = [
         threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event)),
         threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event)),
-        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event)) # Passage de 'lock'
+        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event, addr)) # Passage de 'addr'
     ]
     for t in threads:
         t.daemon = True
@@ -221,10 +221,12 @@ def handle_client(client_socket, addr, stop_event):
     def send_gui_replies():
         while not stop_event.is_set():
             try:
-                # Vérifier si une réponse est disponible depuis le GUI
-                server_reply = message_from_gui_queue.get(timeout=0.1)
-                print(f"[*] SERVER: Envoi de la réponse GUI au client: {server_reply}")
-                send_message(client_socket, send_lock, b'\x05', server_reply.encode('utf-8'))
+                # Récupérer (message, client_addr) de la queue
+                server_reply, target_client_addr = message_from_gui_queue.get(timeout=0.1)
+                # S'assurer que la réponse est pour ce client
+                if target_client_addr == addr:
+                    print(f"[*] SERVER: Envoi de la réponse GUI au client {target_client_addr}: {server_reply}")
+                    send_message(client_socket, send_lock, b'\x05', server_reply.encode('utf-8'))
             except Exception:
                 pass # Pas de message, continuer
     
@@ -246,30 +248,35 @@ def start_server_message_gui(stop_event):
     message_window = None
     message_text_widget = None
     reply_entry = None
+    current_client_addr = None # Pour savoir à quel client répondre
 
-    def send_reply():
-        nonlocal reply_entry
-        reply_text = reply_entry.get().strip()
-        if reply_text:
-            message_from_gui_queue.put(reply_text)
-            message_text_widget.config(state='normal')
-            message_text_widget.insert(tk.END, f"Serveur: {reply_text}\n")
-            message_text_widget.config(state='disabled')
-            message_text_widget.see(tk.END)
-            reply_entry.delete(0, tk.END)
-        message_window.destroy() # Fermer la fenêtre après la réponse
+    def send_reply_and_close(reply_text_from_entry):
+        nonlocal current_client_addr
+        if reply_text_from_entry: # Si l'utilisateur a tapé quelque chose
+            message_from_gui_queue.put((reply_text_from_entry, current_client_addr))
+        else: # Si l'utilisateur n'a rien tapé ou a fermé
+            message_from_gui_queue.put(("Serveur: Votre message a été ignoré.", current_client_addr))
+        
+        # Fermer la fenêtre
+        if message_window and message_window.winfo_exists():
+            message_window.destroy()
+        current_client_addr = None # Réinitialiser
 
-    def show_message_window_callback(client_msg):
-        nonlocal message_window, message_text_widget, reply_entry
+    def on_close_window():
+        # Si la fenêtre est fermée sans réponse, envoyer le message ignoré
+        send_reply_and_close("")
+
+    def show_message_window_callback(client_msg, client_addr):
+        nonlocal message_window, message_text_widget, reply_entry, current_client_addr
+        current_client_addr = client_addr # Stocker l'adresse du client actuel
+
         if message_window is None or not message_window.winfo_exists():
             message_window = tk.Toplevel(root)
-            message_window.title("Message du Client")
+            message_window.title(f"Message du Client ({client_addr[0]})")
             
-            # Définir la taille de la fenêtre
             window_width = 500
             window_height = 400
             
-            # Centrer la fenêtre
             screen_width = message_window.winfo_screenwidth()
             screen_height = message_window.winfo_screenheight()
             center_x = int(screen_width/2 - window_width / 2)
@@ -281,35 +288,34 @@ def start_server_message_gui(stop_event):
             message_frame = tk.Frame(message_window)
             message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-            # NOUVEAU: Définir une police plus grande
             default_font = font.nametofont("TkDefaultFont")
-            default_font.configure(size=12) # Taille de police augmentée
+            default_font.configure(size=12)
             
             message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
             message_text_widget.pack(fill=tk.BOTH, expand=True)
 
-            reply_entry = tk.Entry(message_frame, width=40, font=default_font) # Appliquer la police à l'entrée
+            reply_entry = tk.Entry(message_frame, width=40, font=default_font)
             reply_entry.pack(pady=5, fill=tk.X)
-            reply_entry.bind("<Return>", lambda event: send_reply()) # Envoyer avec Entrée
+            reply_entry.bind("<Return>", lambda event: send_reply_and_close(reply_entry.get().strip())) # Envoyer avec Entrée
 
-            send_button = tk.Button(message_frame, text="Répondre", command=send_reply, font=default_font) # Appliquer la police au bouton
+            send_button = tk.Button(message_frame, text="Répondre", command=lambda: send_reply_and_close(reply_entry.get().strip()), font=default_font)
             send_button.pack(side=tk.LEFT, padx=5, pady=5)
 
-            close_button = tk.Button(message_frame, text="Fermer", command=lambda: message_window.destroy(), font=default_font) # Appliquer la police au bouton
+            close_button = tk.Button(message_frame, text="Fermer", command=on_close_window, font=default_font)
             close_button.pack(side=tk.RIGHT, padx=5, pady=5)
             
-            message_window.protocol("WM_DELETE_WINDOW", lambda: message_window.destroy()) # Gérer la fermeture par la croix
+            message_window.protocol("WM_DELETE_WINDOW", on_close_window) # Gérer la fermeture par la croix
 
         message_text_widget.config(state='normal')
-        message_text_widget.insert(tk.END, f"Client: {client_msg}\n")
+        message_text_widget.insert(tk.END, f"Client ({client_addr[0]}): {client_msg}\n")
         message_text_widget.config(state='disabled')
         message_text_widget.see(tk.END) # Faire défiler vers le bas
         message_window.deiconify() # Afficher la fenêtre
 
     def check_queue():
         try:
-            client_msg = message_to_gui_queue.get_nowait()
-            show_message_window_callback(client_msg)
+            client_msg, client_addr = message_to_gui_queue.get_nowait()
+            show_message_window_callback(client_msg, client_addr)
         except Exception:
             pass # Pas de message
         if not stop_event.is_set():
