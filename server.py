@@ -15,7 +15,7 @@ import ssl
 import sys
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, font
-from queue import Queue
+from queue import Queue, Empty
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
@@ -28,6 +28,7 @@ SERVER_PORT = 1981    # Port pour la connexion TCP sécurisée
 # --- Queues pour la communication inter-threads ---
 message_to_gui_queue = Queue()
 message_from_gui_queue = Queue() # Contient (message, client_addr)
+command_queue = Queue() # Pour les commandes client (souris/clavier)
 # -------------------------------------------------
 
 # --- Fonctions utilitaires ---
@@ -110,7 +111,6 @@ def send_message(sock, lock, msg_type, payload):
 # --- Fonctions de thread ---
 
 def send_screen(client_socket, lock, stop_event):
-    print(f"[*] SERVER THREAD send_screen: Démarré.") # DEBUG
     with mss.mss() as sct:
         monitor = sct.monitors[1]
         while not stop_event.is_set():
@@ -124,10 +124,8 @@ def send_screen(client_socket, lock, stop_event):
                 send_message(client_socket, lock, b'\x01', image_payload)
             except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
             except Exception as e: print(f"Erreur dans send_screen: {e}"); stop_event.set(); break
-    print(f"[*] SERVER THREAD send_screen: Arrêté.") # DEBUG
 
 def send_stats(client_socket, lock, stop_event):
-    print(f"[*] SERVER THREAD send_stats: Démarré.") # DEBUG
     psutil.cpu_percent(interval=None)
     while not stop_event.is_set():
         try:
@@ -137,15 +135,88 @@ def send_stats(client_socket, lock, stop_event):
             time.sleep(1)
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans send_stats: {e}"); stop_event.set(); break
-    print(f"[*] SERVER THREAD send_stats: Arrêté.") # DEBUG
+
+# CORRIGÉ: Dictionnaire de mapping COMPLET pour les touches spéciales
+KIVY_TO_PYNPUT_MAP = {
+    'spacebar': 'space',
+    'lctrl': 'ctrl_l',
+    'rctrl': 'ctrl_r',
+    'ctrl': 'ctrl',
+    'lalt': 'alt_l',
+    'ralt': 'alt_gr',
+    'alt': 'alt',
+    'lshift': 'shift_l',
+    'rshift': 'shift_r',
+    'shift': 'shift',
+    'capslock': 'caps_lock',
+    'escape': 'esc',
+    'pageup': 'page_up',
+    'pagedown': 'page_down',
+    'enter': 'enter',
+    'backspace': 'backspace',
+    'tab': 'tab',
+    'delete': 'delete',
+    'home': 'home',
+    'end': 'end',
+    'insert': 'insert',
+    'numlock': 'num_lock',
+    'printscreen': 'print_screen',
+    'scrolllock': 'scroll_lock',
+    'pause': 'pause',
+    'up': 'up',
+    'down': 'down',
+    'left': 'left',
+    'right': 'right',
+}
 
 def get_pynput_key(key_name):
-    try: return Key[key_name.lower()]
-    except KeyError: return key_name
+    pynput_name = KIVY_TO_PYNPUT_MAP.get(key_name, key_name)
+    try:
+        return Key[pynput_name]
+    except KeyError:
+        return pynput_name
 
-def receive_commands(client_socket, lock, stop_event, client_addr):
-    print(f"[*] SERVER THREAD receive_commands: Démarré.") # DEBUG
+# Thread pour traiter les commandes de manière centralisée
+def command_processor(stop_event):
+    print(f"[*] Thread processeur de commandes démarré.")
     mouse, keyboard = MouseController(), KeyboardController()
+    while not stop_event.is_set():
+        try:
+            cmd_type, args = command_queue.get(timeout=0.1)
+
+            if cmd_type == "MOUSEDOWN":
+                x, y, btn = args
+                mouse.position = (x, y)
+                mouse.press(Button.left if btn == "left" else Button.right)
+            elif cmd_type == "MOUSEUP":
+                x, y, btn = args
+                mouse.position = (x, y)
+                mouse.release(Button.left if btn == "left" else Button.right)
+            elif cmd_type == "CLICK":
+                x, y, btn = args
+                mouse.position = (x, y)
+                mouse.click(Button.left if btn == "left" else Button.right, 1)
+            elif cmd_type == "DOUBLECLICK":
+                x, y, btn = args
+                mouse.position = (x, y)
+                mouse.click(Button.left if btn == "left" else Button.right, 2)
+            elif cmd_type == "MOVE":
+                x, y = args
+                mouse.position = (x, y)
+            elif cmd_type == "KEYPRESS":
+                key_str = args[0]
+                keyboard.press(get_pynput_key(key_str))
+            elif cmd_type == "KEYRELEASE":
+                key_str = args[0]
+                keyboard.release(get_pynput_key(key_str))
+        except Empty:
+            continue
+        except Exception as e:
+            print(f"[!] Erreur dans command_processor: {e} pour la commande {cmd_type} avec args {args}")
+    print(f"[*] Thread processeur de commandes arrêté.")
+
+# Ce thread ne fait que recevoir et mettre en file d'attente
+def receive_commands(client_socket, stop_event, client_addr):
     data = b""
     header_size = struct.calcsize("!L") + 1
     while not stop_event.is_set():
@@ -163,67 +234,59 @@ def receive_commands(client_socket, lock, stop_event, client_addr):
             payload = data[:msg_size]
             data = data[msg_size:]
 
-            if msg_type == b'\x00':
+            if msg_type == b'\x00': # Commande
                 command_str = payload.decode('utf-8')
                 parts = command_str.split(';')
                 cmd_type = parts[0]
                 
-                if cmd_type == "CLICK":
-                    x, y, btn = int(parts[1]), int(parts[2]), parts[3]
-                    mouse.position = (x, y)
-                    mouse.click(Button.left if btn == "left" else Button.right, 1)
-                    print(f"[*] SERVER: CLICK received at ({x}, {y}) with button {btn}") # DEBUG
+                if cmd_type in ["MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK"]:
+                    args = (int(parts[1]), int(parts[2]), parts[3])
+                    command_queue.put((cmd_type, args))
                 elif cmd_type == "MOVE":
-                    x, y = int(parts[1]), int(parts[2])
-                    mouse.position = (x, y)
-                elif cmd_type == "KEYPRESS":
-                    keyboard.press(get_pynput_key(parts[1]))
-                    print(f"[*] SERVER: KEYPRESS received for {parts[1]}") # DEBUG
-                elif cmd_type == "KEYRELEASE":
-                    keyboard.release(get_pynput_key(parts[1]))
-                    print(f"[*] SERVER: KEYRELEASE received for {parts[1]}") # DEBUG
+                    args = (int(parts[1]), int(parts[2]))
+                    command_queue.put((cmd_type, args))
+                elif cmd_type in ["KEYPRESS", "KEYRELEASE"]:
+                    args = (parts[1],) 
+                    command_queue.put((cmd_type, args))
             
             elif msg_type == b'\x04': # Message du client
                 client_message = payload.decode('utf-8')
-                print(f"[MESSAGE DU CLIENT]: {client_message}")
                 message_to_gui_queue.put((client_message, client_addr))
             
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans receive_commands: {e}"); stop_event.set(); break
-    print(f"[*] SERVER THREAD receive_commands: Arrêté.") # DEBUG
 
 def handle_client(client_socket, addr, stop_event):
-    print(f"[*] SERVER: Connexion sécurisée acceptée de {addr[0]}:{addr[1]}") # DEBUG
+    print(f"[*] Connexion sécurisée acceptée de {addr[0]}:{addr[1]}")
     send_lock = threading.Lock()
     try:
         sys_info = get_system_info()
         info_payload = json.dumps(sys_info).encode('utf-8')
         send_message(client_socket, send_lock, b'\x02', info_payload)
-        print(f"[*] SERVER: Infos système initiales envoyées à {addr[0]}") # DEBUG
     except Exception as e:
-        print(f"[!] SERVER: Erreur critique lors de l'envoi des infos système initiales à {addr[0]}: {e}") # DEBUG
+        print(f"[!] Erreur critique lors de l'envoi des infos système initiales à {addr[0]}: {e}")
         client_socket.close()
         return
 
     threads = [
         threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event)),
         threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event)),
-        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event, addr))
+        threading.Thread(target=receive_commands, args=(client_socket, stop_event, addr))
     ]
     for t in threads:
         t.daemon = True
         t.start()
-    print(f"[*] SERVER: Threads de communication démarrés pour {addr[0]}") # DEBUG
 
     def send_gui_replies():
         while not stop_event.is_set():
             try:
                 server_reply, target_client_addr = message_from_gui_queue.get(timeout=0.1)
                 if target_client_addr == addr:
-                    print(f"[*] SERVER: Envoi de la réponse GUI au client {target_client_addr}: {server_reply}")
                     send_message(client_socket, send_lock, b'\x05', server_reply.encode('utf-8'))
-            except Exception:
+            except Empty:
                 pass
+            except Exception as e:
+                print(f"Erreur dans send_gui_replies: {e}")
     
     reply_thread = threading.Thread(target=send_gui_replies)
     reply_thread.daemon = True
@@ -232,10 +295,10 @@ def handle_client(client_socket, addr, stop_event):
 
     for t in threads:
         t.join()
-    print(f"[*] SERVER: Connexion avec {addr[0]} terminée. Fermeture du socket.") # DEBUG
+    print(f"[*] Connexion avec {addr[0]} terminée. Fermeture du socket.")
     client_socket.close()
 
-# --- NOUVEAU: Fonction pour la fenêtre de messagerie Tkinter ---
+# --- Fonction pour la fenêtre de messagerie Tkinter ---
 def start_server_message_gui(stop_event):
     root = tk.Tk()
     root.withdraw()
@@ -266,32 +329,25 @@ def start_server_message_gui(stop_event):
 
         if message_window is None or not message_window.winfo_exists():
             message_window = tk.Toplevel(root)
-            message_window.overrideredirect(True) # Supprime la barre de titre
+            message_window.overrideredirect(True)
             
-            window_width = 800
-            window_height = 600
-            
-            screen_width = message_window.winfo_screenwidth()
-            screen_height = message_window.winfo_screenheight()
-            center_x = int(screen_width/2 - window_width / 2)
-            center_y = int(screen_height/2 - window_height / 2)
+            window_width, window_height = 800, 600
+            screen_width, screen_height = message_window.winfo_screenwidth(), message_window.winfo_screenheight()
+            center_x, center_y = int(screen_width/2 - window_width/2), int(screen_height/2 - window_height/2)
             message_window.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
 
             message_window.attributes('-topmost', True)
-            
             message_window.protocol("WM_DELETE_WINDOW", on_close_window)
 
-            message_frame = tk.Frame(message_window, borderwidth=2, relief="solid")
+            message_frame = tk.Frame(message_window, borderwidth=0)
             message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
             default_font = font.nametofont("TkDefaultFont")
             default_font.configure(size=14)
-            
-            # NOUVEAU: Créer un tag de police en gras
             bold_font = font.Font(family=default_font['family'], size=default_font['size'], weight='bold')
             
             message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
-            message_text_widget.tag_configure('bold', font=bold_font) # Configurer le tag
+            message_text_widget.tag_configure('bold', font=bold_font)
             message_text_widget.pack(fill=tk.BOTH, expand=True)
 
             reply_entry = tk.Entry(message_frame, width=40, font=default_font)
@@ -305,8 +361,7 @@ def start_server_message_gui(stop_event):
             close_button.pack(side=tk.RIGHT, padx=5, pady=5)
             
         message_text_widget.config(state='normal')
-        # CORRECTION: Appliquer le tag en gras
-        message_text_widget.insert(tk.END, "Hosanna Tv+ Régit : ", 'bold')
+        message_text_widget.insert(tk.END, "Hosanna Tv+ Régit: ", 'bold')
         message_text_widget.insert(tk.END, f"{client_msg}\n")
         message_text_widget.config(state='disabled')
         message_text_widget.see(tk.END)
@@ -318,8 +373,11 @@ def start_server_message_gui(stop_event):
         try:
             client_msg, client_addr = message_to_gui_queue.get_nowait()
             show_message_window_callback(client_msg, client_addr)
-        except Exception:
+        except Empty:
             pass
+        except Exception as e:
+            print(f"Erreur dans check_queue (GUI): {e}")
+
         if not stop_event.is_set():
             root.after(100, check_queue)
         else:
@@ -329,11 +387,11 @@ def start_server_message_gui(stop_event):
     root.mainloop()
     print("[*] Thread GUI Tkinter arrêté.")
 
-# --- NOUVEAU: Fonction de broadcast UDP pour la découverte ---
+# --- Fonction de broadcast UDP pour la découverte ---
 def discovery_broadcast(server_ip, server_port, stop_event):
     broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    broadcast_socket.settimeout(1) # Petit timeout pour vérifier stop_event
+    broadcast_socket.settimeout(1)
 
     message = f"HOSANNA_REMOTE_SERVER_ADVERTISEMENT;{server_ip};{server_port}".encode('utf-8')
     print(f"[*] Démarrage du broadcast de découverte sur le port {DISCOVERY_PORT}...")
@@ -341,10 +399,9 @@ def discovery_broadcast(server_ip, server_port, stop_event):
     while not stop_event.is_set():
         try:
             broadcast_socket.sendto(message, ('<broadcast>', DISCOVERY_PORT))
-            # print(f"[*] Broadcast envoyé: {message.decode()}")
         except Exception as e:
             print(f"[!] Erreur lors de l'envoi du broadcast: {e}")
-        time.sleep(3) # Envoyer toutes les 3 secondes
+        time.sleep(3)
     
     broadcast_socket.close()
     print("[*] Arrêt du broadcast de découverte.")
@@ -354,7 +411,6 @@ def start_server():
     host = '0.0.0.0'
     port = SERVER_PORT
 
-    # Détecter si nous sommes dans un bundle PyInstaller
     if getattr(sys, 'frozen', False):
         base_path = sys._MEIPASS
     else:
@@ -373,26 +429,25 @@ def start_server():
         print(f"Erreur de chargement des certificats SSL: {e}")
         return
 
-    # Obtenir l'IP locale du serveur pour le broadcast
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
     except Exception:
-        local_ip = "127.0.0.1" # Fallback si pas de connexion internet
+        local_ip = "127.0.0.1"
 
     server_stop_event = threading.Event()
 
-    # Démarrer le thread de broadcast de découverte
-    discovery_thread = threading.Thread(target=discovery_broadcast, args=(local_ip, port, server_stop_event))
-    discovery_thread.daemon = True
-    discovery_thread.start()
+    global_threads = [
+        threading.Thread(target=discovery_broadcast, args=(local_ip, port, server_stop_event)),
+        threading.Thread(target=start_server_message_gui, args=(server_stop_event,)),
+        threading.Thread(target=command_processor, args=(server_stop_event,))
+    ]
 
-    # NOUVEAU: Démarrer le thread GUI de messagerie
-    gui_thread = threading.Thread(target=start_server_message_gui, args=(server_stop_event,))
-    gui_thread.daemon = True
-    gui_thread.start()
+    for t in global_threads:
+        t.daemon = True
+        t.start()
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -401,40 +456,36 @@ def start_server():
             print(f"[*] Le serveur sécurisé écoute sur {host}:{port} en mode application.")
             
             with context.wrap_socket(sock, server_side=True) as ssock:
-                while not server_stop_event.is_set(): # Utiliser le même stop_event
+                while not server_stop_event.is_set():
                     try:
                         ssock.settimeout(1) 
                         client_socket, addr = ssock.accept()
-                        stop_event_client = threading.Event() # Stop event par client
+                        stop_event_client = threading.Event()
                         threading.Thread(target=handle_client, args=(client_socket, addr, stop_event_client), daemon=True).start()
                     except socket.timeout:
                         pass
                     except KeyboardInterrupt:
                         print("\n[*] Arrêt du serveur.")
-                        server_stop_event.set() # Signaler l'arrêt
+                        server_stop_event.set()
                         break
                     except Exception as e:
                         print(f"[!] Erreur dans la boucle principale du serveur: {e}")
     except Exception as e:
         print(f"[!] Erreur critique lors du démarrage du socket serveur: {e}")
-        server_stop_event.set() # Signaler l'arrêt en cas d'erreur critique
+        server_stop_event.set()
 
-    # Attendre la fin des threads
-    if discovery_thread and discovery_thread.is_alive():
-        discovery_thread.join(timeout=5)
-    if gui_thread and gui_thread.is_alive():
-        gui_thread.join(timeout=5)
+    for t in global_threads:
+        if t.is_alive():
+            t.join(timeout=2)
     print("[*] Serveur arrêté.")
 
 
 # --- Bloc d'exécution principal ---
 if __name__ == '__main__':
-    # NOUVEAU: Supprimer le fichier batch pour éviter les confusions
     if os.path.exists("install_and_start_service.bat"):
         os.remove("install_and_start_service.bat")
         print("Fichier install_and_start_service.bat supprimé.")
     
-    # NOUVEAU: Supprimer le fichier de log du service
     if os.path.exists("server_service.log"):
         os.remove("server_service.log")
         print("Fichier server_service.log supprimé.")

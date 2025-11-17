@@ -1,3 +1,7 @@
+# NOUVEAU: Désactiver le point rouge du clic droit
+from kivy.config import Config
+Config.set('input', 'mouse', 'mouse,multitouch_on_demand')
+
 import socket
 import struct
 import io
@@ -39,7 +43,7 @@ def send_command(command_type, payload=""):
             if command_type == "MESSAGE":
                 msg_type = b'\x04' # Nouveau type pour les messages client
                 cmd_bytes = payload.encode('utf-8')
-            else: # Commandes existantes (CLICK, MOVE, KEYPRESS, KEYRELEASE)
+            else: # Commandes existantes (MOUSEDOWN, MOUSEUP, CLICK, MOVE, KEYPRESS, KEYRELEASE)
                 msg_type = b'\x00' # Type générique pour les commandes de contrôle
                 cmd_bytes = f"{command_type};{payload}".encode('utf-8')
             
@@ -98,9 +102,24 @@ class DesktopViewerLayout(BoxLayout):
             if x == -1 and y == -1:
                 return True
             btn = "left" if touch.button == 'left' else "right"
-            send_command("CLICK", f"{x};{y};{btn}")
+            send_command("MOUSEDOWN", f"{x};{y};{btn}")
             return True
         return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        if self.screen_image.collide_point(*touch.pos):
+            x, y = self._get_scaled_coords(touch)
+            if x == -1 and y == -1:
+                return True
+            btn = "left" if touch.button == 'left' else "right"
+            if touch.is_double_tap:
+                send_command("DOUBLECLICK", f"{x};{y};{btn}")
+            elif touch.time_end - touch.time_start < 0.2:
+                send_command("CLICK", f"{x};{y};{btn}")
+            else:
+                send_command("MOUSEUP", f"{x};{y};{btn}")
+            return True
+        return super().on_touch_up(touch)
 
     def on_touch_move(self, touch):
         if self.screen_image.collide_point(*touch.pos):
@@ -251,7 +270,7 @@ class MainScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         root = BoxLayout(orientation='vertical')
-        tabs = MDTabs()
+        tabs = MDTabs(on_tab_switch=self.on_tab_switch)
         desktop_tab = Tab(title='Bureau à distance')
         self.desktop_layout = DesktopViewerLayout()
         desktop_tab.add_widget(self.desktop_layout)
@@ -308,16 +327,24 @@ class MainScreen(Screen):
     def send_message(self, message_input_widget):
         message_text = message_input_widget.text.strip()
         if message_text:
-            self.message_history_label.text += f"[color=#00BFFF]Client:[/color] {message_text}\n"
+            self.message_history_label.text += f"[color=#00BFFF]Hosanna Tv+ Reg:[/color] {message_text}\n"
             send_command("MESSAGE", message_text)
             message_input_widget.text = "" # Effacer le champ après envoi
-            # Faire défiler vers le bas
             Clock.schedule_once(lambda dt: self.message_scroll_view.scroll_to(self.message_history_label))
 
     def receive_server_message(self, message):
-        self.message_history_label.text += f"[color=#FFD700]Serveur:[/color] {message}\n"
-        # Faire défiler vers le bas
+        if "Votre message a été ignoré" in message:
+            self.message_history_label.text += f"[color=#FF0000]{message}[/color]\n"
+        else:
+            self.message_history_label.text += f"[color=#FFD700]Hosanna Tv+ Reg Final:[/color] {message}\n"
         Clock.schedule_once(lambda dt: self.message_scroll_view.scroll_to(self.message_history_label))
+
+    def on_tab_switch(self, instance_tabs, instance_tab, instance_tab_label, tab_text):
+        app = MDApp.get_running_app()
+        if tab_text == 'Bureau à distance':
+            app.activate_remote_keyboard()
+        else:
+            app.release_remote_keyboard()
 
 
 class RemoteViewerApp(MDApp):
@@ -365,9 +392,8 @@ class RemoteViewerApp(MDApp):
             sock.settimeout(5) # Timeout for initial connect()
             client_socket = context.wrap_socket(sock, server_hostname=host)
             client_socket.connect((host, port))
-            client_socket.settimeout(None) # NOUVEAU: Set to blocking after successful connection
+            client_socket.settimeout(None) # Set to blocking after successful connection
             print(f"[*] Connecté au serveur sécurisé !")
-            Clock.schedule_once(lambda dt: self.activate_remote_keyboard())
             Clock.schedule_once(lambda dt: setattr(self.sm, 'current', 'main'))
         except Exception as e:
             print(f"[!] Échec de la connexion : {e}")
