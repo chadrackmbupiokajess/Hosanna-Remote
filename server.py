@@ -13,6 +13,9 @@ import re
 import cpuinfo
 import ssl
 import sys
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, font # Nouvelle importation pour la police
+from queue import Queue
 
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
@@ -21,6 +24,11 @@ from pynput.keyboard import Key, Controller as KeyboardController
 DISCOVERY_PORT = 1982 # Port pour la découverte UDP
 SERVER_PORT = 1981    # Port pour la connexion TCP sécurisée
 # ------------------
+
+# --- Queues pour la communication inter-threads ---
+message_to_gui_queue = Queue()
+message_from_gui_queue = Queue()
+# -------------------------------------------------
 
 # --- Fonctions utilitaires ---
 
@@ -176,11 +184,11 @@ def receive_commands(client_socket, lock, stop_event):
                     keyboard.release(get_pynput_key(parts[1]))
                     print(f"[*] SERVER: KEYRELEASE received for {parts[1]}") # DEBUG
             
-            elif msg_type == b'\x04': # Message du client (Nouveau type)
+            elif msg_type == b'\x04': # Message du client
                 client_message = payload.decode('utf-8')
                 print(f"[MESSAGE DU CLIENT]: {client_message}")
-                response_message = f"Serveur: Message reçu: '{client_message}'"
-                send_message(client_socket, lock, b'\x05', response_message.encode('utf-8')) # \x05 pour réponse serveur
+                # Placer le message dans la queue pour le thread GUI
+                message_to_gui_queue.put(client_message)
             
         except (ConnectionResetError, BrokenPipeError): stop_event.set(); break
         except Exception as e: print(f"Erreur dans receive_commands: {e}"); stop_event.set(); break
@@ -202,17 +210,116 @@ def handle_client(client_socket, addr, stop_event):
     threads = [
         threading.Thread(target=send_screen, args=(client_socket, send_lock, stop_event)),
         threading.Thread(target=send_stats, args=(client_socket, send_lock, stop_event)),
-        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event))
+        threading.Thread(target=receive_commands, args=(client_socket, send_lock, stop_event)) # Passage de 'lock'
     ]
     for t in threads:
         t.daemon = True
         t.start()
     print(f"[*] SERVER: Threads de communication démarrés pour {addr[0]}") # DEBUG
 
+    # NOUVEAU: Thread pour envoyer les réponses du GUI au client
+    def send_gui_replies():
+        while not stop_event.is_set():
+            try:
+                # Vérifier si une réponse est disponible depuis le GUI
+                server_reply = message_from_gui_queue.get(timeout=0.1)
+                print(f"[*] SERVER: Envoi de la réponse GUI au client: {server_reply}")
+                send_message(client_socket, send_lock, b'\x05', server_reply.encode('utf-8'))
+            except Exception:
+                pass # Pas de message, continuer
+    
+    reply_thread = threading.Thread(target=send_gui_replies)
+    reply_thread.daemon = True
+    reply_thread.start()
+    threads.append(reply_thread) # Ajouter au threads à joindre
+
     for t in threads:
         t.join()
     print(f"[*] SERVER: Connexion avec {addr[0]} terminée. Fermeture du socket.") # DEBUG
     client_socket.close()
+
+# --- NOUVEAU: Fonction pour la fenêtre de messagerie Tkinter ---
+def start_server_message_gui(stop_event):
+    root = tk.Tk()
+    root.withdraw() # Cacher la fenêtre racine Tkinter
+
+    message_window = None
+    message_text_widget = None
+    reply_entry = None
+
+    def send_reply():
+        nonlocal reply_entry
+        reply_text = reply_entry.get().strip()
+        if reply_text:
+            message_from_gui_queue.put(reply_text)
+            message_text_widget.config(state='normal')
+            message_text_widget.insert(tk.END, f"Serveur: {reply_text}\n")
+            message_text_widget.config(state='disabled')
+            message_text_widget.see(tk.END)
+            reply_entry.delete(0, tk.END)
+        message_window.destroy() # Fermer la fenêtre après la réponse
+
+    def show_message_window_callback(client_msg):
+        nonlocal message_window, message_text_widget, reply_entry
+        if message_window is None or not message_window.winfo_exists():
+            message_window = tk.Toplevel(root)
+            message_window.title("Message du Client")
+            
+            # Définir la taille de la fenêtre
+            window_width = 500
+            window_height = 400
+            
+            # Centrer la fenêtre
+            screen_width = message_window.winfo_screenwidth()
+            screen_height = message_window.winfo_screenheight()
+            center_x = int(screen_width/2 - window_width / 2)
+            center_y = int(screen_height/2 - window_height / 2)
+            message_window.geometry(f"{window_width}x{window_height}+{center_x}+{center_y}")
+
+            message_window.attributes('-topmost', True) # Toujours au-dessus
+
+            message_frame = tk.Frame(message_window)
+            message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+            # NOUVEAU: Définir une police plus grande
+            default_font = font.nametofont("TkDefaultFont")
+            default_font.configure(size=12) # Taille de police augmentée
+            
+            message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
+            message_text_widget.pack(fill=tk.BOTH, expand=True)
+
+            reply_entry = tk.Entry(message_frame, width=40, font=default_font) # Appliquer la police à l'entrée
+            reply_entry.pack(pady=5, fill=tk.X)
+            reply_entry.bind("<Return>", lambda event: send_reply()) # Envoyer avec Entrée
+
+            send_button = tk.Button(message_frame, text="Répondre", command=send_reply, font=default_font) # Appliquer la police au bouton
+            send_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+            close_button = tk.Button(message_frame, text="Fermer", command=lambda: message_window.destroy(), font=default_font) # Appliquer la police au bouton
+            close_button.pack(side=tk.RIGHT, padx=5, pady=5)
+            
+            message_window.protocol("WM_DELETE_WINDOW", lambda: message_window.destroy()) # Gérer la fermeture par la croix
+
+        message_text_widget.config(state='normal')
+        message_text_widget.insert(tk.END, f"Client: {client_msg}\n")
+        message_text_widget.config(state='disabled')
+        message_text_widget.see(tk.END) # Faire défiler vers le bas
+        message_window.deiconify() # Afficher la fenêtre
+
+    def check_queue():
+        try:
+            client_msg = message_to_gui_queue.get_nowait()
+            show_message_window_callback(client_msg)
+        except Exception:
+            pass # Pas de message
+        if not stop_event.is_set():
+            root.after(100, check_queue) # Vérifier la queue toutes les 100ms
+        else:
+            root.quit() # Quitter la boucle Tkinter
+
+    root.after(100, check_queue)
+    root.mainloop()
+    print("[*] Thread GUI Tkinter arrêté.")
 
 # --- NOUVEAU: Fonction de broadcast UDP pour la découverte ---
 def discovery_broadcast(server_ip, server_port, stop_event):
@@ -274,6 +381,11 @@ def start_server():
     discovery_thread.daemon = True
     discovery_thread.start()
 
+    # NOUVEAU: Démarrer le thread GUI de messagerie
+    gui_thread = threading.Thread(target=start_server_message_gui, args=(server_stop_event,))
+    gui_thread.daemon = True
+    gui_thread.start()
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((host, port))
@@ -299,9 +411,11 @@ def start_server():
         print(f"[!] Erreur critique lors du démarrage du socket serveur: {e}")
         server_stop_event.set() # Signaler l'arrêt en cas d'erreur critique
 
-    # Attendre la fin du thread de découverte
+    # Attendre la fin des threads
     if discovery_thread and discovery_thread.is_alive():
         discovery_thread.join(timeout=5)
+    if gui_thread and gui_thread.is_alive():
+        gui_thread.join(timeout=5)
     print("[*] Serveur arrêté.")
 
 
