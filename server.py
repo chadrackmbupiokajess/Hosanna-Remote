@@ -266,9 +266,8 @@ def start_server_message_gui(stop_event):
 
         if message_window is None or not message_window.winfo_exists():
             message_window = tk.Toplevel(root)
-            message_window.title(f"Message du Client ({client_addr[0]})")
+            message_window.overrideredirect(True) # Supprime la barre de titre
             
-            # CORRECTION: Agrandir la fenêtre
             window_width = 800
             window_height = 600
             
@@ -282,14 +281,17 @@ def start_server_message_gui(stop_event):
             
             message_window.protocol("WM_DELETE_WINDOW", on_close_window)
 
-            message_frame = tk.Frame(message_window)
+            message_frame = tk.Frame(message_window, borderwidth=2, relief="solid")
             message_frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-            # CORRECTION: Augmenter la taille de la police
             default_font = font.nametofont("TkDefaultFont")
             default_font.configure(size=14)
             
+            # NOUVEAU: Créer un tag de police en gras
+            bold_font = font.Font(family=default_font['family'], size=default_font['size'], weight='bold')
+            
             message_text_widget = scrolledtext.ScrolledText(message_frame, wrap=tk.WORD, state='disabled', height=8, font=default_font)
+            message_text_widget.tag_configure('bold', font=bold_font) # Configurer le tag
             message_text_widget.pack(fill=tk.BOTH, expand=True)
 
             reply_entry = tk.Entry(message_frame, width=40, font=default_font)
@@ -303,7 +305,9 @@ def start_server_message_gui(stop_event):
             close_button.pack(side=tk.RIGHT, padx=5, pady=5)
             
         message_text_widget.config(state='normal')
-        message_text_widget.insert(tk.END, f"Client ({client_addr[0]}): {client_msg}\n")
+        # CORRECTION: Appliquer le tag en gras
+        message_text_widget.insert(tk.END, "Hosanna Tv+ Régit : ", 'bold')
+        message_text_widget.insert(tk.END, f"{client_msg}\n")
         message_text_widget.config(state='disabled')
         message_text_widget.see(tk.END)
         message_window.deiconify()
